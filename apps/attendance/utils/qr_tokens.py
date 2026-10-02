@@ -36,7 +36,16 @@ class InvalidTokenError(QRTokenError):
 
 
 _LOCAL_TOKEN_LOCK = threading.Lock()
-_LOCAL_USED_KEYS: set[str] = set()
+
+#: How long a "this token was consumed" tombstone is retained.
+#:
+#: Without it the Redis path cannot tell an *expired* token from an *already
+#: used* one -- ``GET``+``DEL`` returns nil for both -- so an expired QR
+#: produced 409 on Redis but 404 on LocMem. The same HTTP response must not
+#: depend on which cache backend a deployment happens to run. The tombstone is
+#: cached with a TTL rather than kept in a process-global set, which previously
+#: grew for the lifetime of the process.
+_USED_TOMBSTONE_TTL_SECONDS = 300
 
 
 def get_qr_token_ttl_seconds() -> int:
@@ -49,6 +58,31 @@ def get_qr_token_ttl_seconds() -> int:
 
 def _key(token: str) -> str:
     return f"attendance:qr:{token}"
+
+
+def _used_key(token: str) -> str:
+    """Cache key of the tombstone marking ``token`` as already consumed."""
+    return f"attendance:qr:used:{token}"
+
+
+def _mark_used(token: str, *, client: Optional[Any] = None) -> None:
+    """Record that ``token`` has been consumed, so a replay is distinguishable
+    from a token that simply expired."""
+    if client is not None:  # pragma: no cover - exercised on Redis deployments
+        client.set(_used_key(token), "1", ex=_USED_TOMBSTONE_TTL_SECONDS)
+    else:
+        cache.set(_used_key(token), "1", timeout=_USED_TOMBSTONE_TTL_SECONDS)
+
+
+def _was_used(token: str, *, client: Optional[Any] = None) -> bool:
+    if client is not None:  # pragma: no cover - exercised on Redis deployments
+        try:
+            return bool(client.exists(_used_key(token)))
+        except Exception:
+            # Fail closed towards "used": replaying a token must never be the
+            # cheaper interpretation when the store is unavailable.
+            return True
+    return bool(cache.get(_used_key(token)))
 
 
 def _redis_client() -> Optional[Any]:
@@ -105,6 +139,12 @@ def consume_token(token: str) -> Dict[str, str]:
     Redis uses one Lua operation (GET then DEL in one server-side command).
     The local development cache uses one process lock.  There is deliberately
     no read-then-write path that could let two simultaneous scans succeed.
+
+    Both backends report the same two failure modes with the same exception
+    types, so the HTTP status a client sees does not depend on the deployment:
+
+    * never issued, or TTL elapsed -> ``TokenExpiredError`` (404)
+    * already consumed             -> ``TokenAlreadyUsedError`` (409)
     """
     if not token or not isinstance(token, str):
         raise TokenExpiredError("Attendance token is missing or expired")
@@ -119,20 +159,25 @@ def consume_token(token: str) -> Dict[str, str]:
             key,
         )
         if raw is None:
-            raise TokenAlreadyUsedError("Attendance token was already used or expired")
+            # Redis cannot distinguish "absent" from "already deleted" on its
+            # own; the tombstone is what makes the two cases separable.
+            if _was_used(token, client=client):
+                raise TokenAlreadyUsedError("Attendance token was already used")
+            raise TokenExpiredError("Attendance token is missing or expired")
+        _mark_used(token, client=client)
         try:
             return json.loads(raw)
         except (TypeError, ValueError) as exc:  # pragma: no cover - cache corruption
             raise InvalidTokenError("Attendance token payload is invalid") from exc
 
     with _LOCAL_TOKEN_LOCK:
-        if key in _LOCAL_USED_KEYS:
+        if _was_used(token):
             raise TokenAlreadyUsedError("Attendance token was already used")
         payload = cache.get(key)
         if payload is None:
             raise TokenExpiredError("Attendance token is missing or expired")
         cache.delete(key)
-        _LOCAL_USED_KEYS.add(key)
+        _mark_used(token)
         return payload
 
 

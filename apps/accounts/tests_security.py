@@ -8,12 +8,14 @@ Each test maps to one numbered audit finding.  See the audit report:
   Check 4           SESSION_COOKIE_SECURE / CSRF_COOKIE_SECURE = True when DEBUG is False
   Check 5           Username lowercased on uniqueness check and on save
   Check 6           DRF raise_exception validation errors use the standard envelope
-  Check 7           Attendî/.env.example matches .env values
-  Check 8           cacheCsrfToken removed from Attendî utils/tokenHelpers.js
+  Check 7           frontend/.env.example matches .env values
+  Check 8           obsolete cacheCsrfToken/getCachedCsrfToken helpers absent
+                    from the frontend source tree
+  Check 9  CRITICAL  Registration runs AUTH_PASSWORD_VALIDATORS
 
 Checks 3, 4, 7 and 8 are static/file checks run by scripts/security_audit_checks.py
-(`python scripts/security_audit_checks.py`).  Checks 1, 2, 5, 6 are behavioural
-and live here so they run under the normal Django test runner.
+(`python scripts/security_audit_checks.py`).  Checks 1, 2, 5, 6 and 9 are
+behavioural and live here so they run under the normal Django test runner.
 
 Run everything with:
     python scripts/security_audit_checks.py
@@ -147,3 +149,90 @@ class SecurityAuditChecks(TestCase):
         self.assertIn("message", response.data["error"])
         self.assertEqual(response.data["error"]["code"], "INVALID_DATA")
         self.assertIsInstance(response.data["error"]["message"], str)
+
+
+class RegistrationPasswordValidatorChecks(TestCase):
+    """Check 9: registration runs the configured AUTH_PASSWORD_VALIDATORS.
+
+    Regression guard.  Before this, ``RegisterSerializer`` enforced only
+    ``min_length=8``: every validator in ``config/settings.py`` was configured
+    but the sole call site for ``validate_password`` anywhere in the project was
+    the change-password view.  ``12345678`` and ``qwertyui`` were accepted.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.payload = {
+            "email": "person@example.test",
+            "username": "person",
+            "first_name": "Per",
+            "last_name": "Son",
+            "password": "StrongPass!2026",
+        }
+
+    def _register(self, password, **overrides):
+        return self.client.post(
+            reverse("accounts:register"),
+            dict(self.payload, password=password, **overrides),
+            format="json",
+        )
+
+    def test_check_9_numeric_password_is_rejected(self):
+        """NumericPasswordValidator: an all-digit password must not register."""
+        response = self._register("12345678")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"]["code"], "INVALID_DATA")
+        self.assertFalse(User.objects.filter(email=self.payload["email"]).exists())
+
+    def test_check_9_common_password_is_rejected(self):
+        """CommonPasswordValidator: a breached/common password must not register."""
+        response = self._register("qwertyui")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("common", response.data["error"]["message"].lower())
+        self.assertFalse(User.objects.filter(email=self.payload["email"]).exists())
+
+    def test_check_9_short_password_is_rejected(self):
+        """MinimumLengthValidator, on top of the existing min_length=8 field rule."""
+        response = self._register("Ab1!")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(email=self.payload["email"]).exists())
+
+    def test_check_9_password_similar_to_identity_is_rejected(self):
+        """UserAttributeSimilarityValidator only works if the submitted
+        identity fields are handed to it — this is the case that proves the
+        unsaved-User wiring in RegisterSerializer.validate() is real."""
+        response = self._register(
+            "person@example.test-2026",
+            email="person@example.test",
+            username="person",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(email=self.payload["email"]).exists())
+
+    def test_check_9_strong_password_is_accepted(self):
+        """The fix must not over-block: a genuinely strong password registers."""
+        response = self._register("Tr0ub4dor&3-Quartz")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(User.objects.filter(email=self.payload["email"]).exists())
+
+    def test_check_9_failure_keeps_envelope_and_reveals_no_account(self):
+        """A weak-password rejection is indistinguishable in shape from the
+        duplicate-email response, so password rules cannot be used to probe
+        whether an address is registered (BR-203)."""
+        self.client.post(reverse("accounts:register"), self.payload, format="json")
+
+        weak = self.client.post(
+            reverse("accounts:register"),
+            dict(self.payload, username="someone-else", password="12345678"),
+            format="json",
+        )
+        duplicate = self.client.post(
+            reverse("accounts:register"),
+            dict(self.payload, username="someone-else"),
+            format="json",
+        )
+        self.assertEqual(weak.status_code, duplicate.status_code)
+        self.assertEqual(set(weak.data.keys()), {"success", "error"})
+        self.assertEqual(weak.data["error"]["code"], duplicate.data["error"]["code"])
+        self.assertEqual(weak.data["error"]["code"], "INVALID_DATA")

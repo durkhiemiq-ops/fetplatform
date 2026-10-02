@@ -1,3 +1,5 @@
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import User
@@ -15,6 +17,40 @@ class RegisterSerializer(serializers.Serializer):
         if User.objects.filter(username=normalized).exists():
             raise serializers.ValidationError("This username is already taken.")
         return normalized
+
+    def validate(self, attrs):
+        """Run the configured AUTH_PASSWORD_VALIDATORS on the new password.
+
+        Previously only ``min_length=8`` applied on this path, so
+        ``12345678`` and ``qwertyui`` were accepted even though
+        ``config/settings.py`` configures all four Django validators. The only
+        call site for ``validate_password`` anywhere in the project was the
+        change-password view, so registration bypassed them entirely.
+
+        An unsaved User is populated with the submitted identity fields first,
+        because ``UserAttributeSimilarityValidator`` compares the password
+        against them -- without it, "password12345" alongside
+        ``email="password12345@x.test"`` would pass.
+
+        The result is keyed to ``password`` so the envelope message stays
+        actionable ("password: This password is too common."). This does not
+        weaken BR-203: password strength reveals nothing about whether an
+        account exists, and the indistinguishable duplicate-email response in
+        ``RegisterView`` is untouched.
+        """
+        password = attrs.get("password")
+        if password:
+            candidate = User(
+                email=attrs.get("email", ""),
+                username=attrs.get("username", ""),
+                first_name=attrs.get("first_name", ""),
+                last_name=attrs.get("last_name", ""),
+            )
+            try:
+                validate_password(password, user=candidate)
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"password": list(exc.messages)})
+        return attrs
 
 
 class LoginSerializer(serializers.Serializer):
