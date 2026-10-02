@@ -530,14 +530,17 @@ const CourseDetail = ({ user }) => {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {material.file_info && (
-                        <a
-                          href={learningApi.getDownloadUrl(material.file_info.id)}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          type="button"
+                          onClick={() =>
+                            learningApi
+                              .downloadFile(material.file_info.id)
+                              .catch(() => notifyError('Download failed.'))
+                          }
                           className="fet-btn-secondary flex items-center gap-1 text-sm"
                         >
                           <Download size={15} /> <span className="hidden sm:inline">{formatBytes(material.file_info.size_bytes)}</span>
-                        </a>
+                        </button>
                       )}
                       {isStaff && (
                         <button
@@ -784,14 +787,17 @@ const CourseDetail = ({ user }) => {
                     </div>
                   </div>
                   {asgn.attachment_info && (
-                    <a
-                      href={learningApi.getDownloadUrl(asgn.attachment_info.id)}
-                      target="_blank"
-                      rel="noreferrer"
+                    <button
+                      type="button"
+                      onClick={() =>
+                        learningApi
+                          .downloadFile(asgn.attachment_info.id)
+                          .catch(() => notifyError('Download failed.'))
+                      }
                       className="fet-btn-secondary flex items-center gap-1 text-sm shrink-0"
                     >
                       <Download size={15} /> Brief
-                    </a>
+                    </button>
                   )}
                 </div>
 
@@ -876,14 +882,17 @@ const CourseDetail = ({ user }) => {
                                     </span>
                                   </div>
                                   {sub.file_info && (
-                                    <a
-                                      href={learningApi.getDownloadUrl(sub.file_info.id)}
-                                      target="_blank"
-                                      rel="noreferrer"
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        learningApi
+                                          .downloadFile(sub.file_info.id)
+                                          .catch(() => notifyError('Download failed.'))
+                                      }
                                       className="mt-2 inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
                                     >
                                       <Download size={14} /> {sub.file_info.original_name}
-                                    </a>
+                                    </button>
                                   )}
                                   <div className="mt-3 grid grid-cols-1 md:grid-cols-[140px_1fr_auto] gap-2 items-end">
                                     <label className="flex flex-col gap-1">

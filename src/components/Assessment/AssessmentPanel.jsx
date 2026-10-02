@@ -379,9 +379,15 @@ const AssessmentPanel = ({ offeringId, user }) => {
                           : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
                           {published ? 'Published' : 'Draft'}
                         </span>
-                        <a href={learningApi.groupExportUrl(g.id)} className="fet-btn-secondary text-xs flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            learningApi.downloadGroupExport(g.id).catch(() => {})
+                          }
+                          className="fet-btn-secondary text-xs flex items-center gap-1"
+                        >
                           <Download size={13} /> CSV
-                        </a>
+                        </button>
                         <button
                           onClick={() => setGroupStatus(g, published ? 'DRAFT' : 'PUBLISHED')}
                           className="fet-btn-secondary text-xs"
@@ -640,25 +646,30 @@ const AssessmentPanel = ({ offeringId, user }) => {
                   )}
                 </p>
                 {a.attachment_info && (
-                  <a
-                    href={learningApi.getDownloadUrl(a.attachment_info.id)}
-                    target="_blank" rel="noreferrer"
+                  <button
+                    type="button"
+                    onClick={() =>
+                      learningApi.downloadFile(a.attachment_info.id).catch(() => {})
+                    }
                     className="mt-2 inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
                   >
                     <Download size={14} /> {a.attachment_info.original_name}
-                  </a>
+                  </button>
                 )}
               </div>
 
               {isStaff && (
                 <div className="flex items-center gap-2 flex-wrap">
-                  <a
-                    href={learningApi.assessmentExportUrl(a.id)}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      learningApi.downloadAssessmentExport(a.id).catch(() => {})
+                    }
                     className="fet-btn-secondary text-sm flex items-center gap-1.5"
                     title="Download as CSV"
                   >
                     <Download size={15} /> CSV
-                  </a>
+                  </button>
                   {published ? (
                     <button
                       onClick={() => { if (window.confirm('Move back to draft? Students will no longer see it.')) setStatus(a, 'DRAFT'); }}

@@ -8,7 +8,6 @@ import StudentDashboard from './components/Dashboard/StudentDashboard';
 import LecturerDashboard from './components/Dashboard/LecturerDashboard';
 import CoordinatorDashboard from './components/Dashboard/CoordinatorDashboard';
 import Login from './components/Auth/Login';
-import SignUp from './components/Auth/SignUp';
 import ChangePassword from './components/Auth/ChangePassword';
 import ProfilePage from './components/Profile/ProfilePage';
 import AttendanceDashboard from './components/Attendance/AttendanceDashboard';
@@ -64,17 +63,7 @@ const ExcludeRole = ({ role, children }) => {
   return children;
 };
 
-// BR-003: a roster account carries a temporary password and may do nothing
-// else until it is replaced. The backend rejects everything outside the auth
-// endpoints (403); this mirrors that so the user is redirected rather than
-// shown a screen full of failed requests.
-const RequirePasswordChange = ({ mustChangePassword, children }) => {
-  if (!mustChangePassword) return children;
-  return <Navigate to="/change-password" replace />;
-};
-
-// Everything a fully-provisioned account can reach. Split out of App so the
-// BR-003 password-change redirect can wrap all of it in one place.
+// Everything a fully-provisioned account can reach.
 const DashboardRoutes = ({ user }) => (
   <Routes>
     <Route path="/" element={<DashboardHome />} />
@@ -134,7 +123,6 @@ const DashboardRoutes = ({ user }) => (
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
-  const [showSignUp, setShowSignUp] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -198,9 +186,6 @@ function App() {
     }
   };
 
-  const handleSwitchToSignUp = () => setShowSignUp(true);
-  const handleSwitchToLogin = () => setShowSignUp(false);
-
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-page-bg">
@@ -216,19 +201,11 @@ function App() {
   }
 
   if (!isAuthenticated) {
-    if (showSignUp) {
-      return <SignUp onSignUp={handleLogin} onSwitchToLogin={handleSwitchToLogin} />;
-    }
-    return <Login onLogin={handleLogin} onSwitchToSignUp={handleSwitchToSignUp} />;
+    return <Login onLogin={handleLogin} />;
   }
 
   const userName = user?.fullName || user?.email?.split('@')[0] || 'User';
   const userRole = user?.role || 'student';
-
-  // BR-003: a roster-created account signs in with a temporary password and
-  // stays locked out of everything else until it is replaced. The flag comes
-  // from /auth/me/, so this is the client's view of a server-enforced rule.
-  const mustChangePassword = Boolean(user?.must_change_password);
 
   return (
     <ThemeProvider>
@@ -241,16 +218,9 @@ function App() {
                 <Routes>
                   <Route
                     path="/change-password"
-                    element={<ChangePassword user={user} forced={mustChangePassword} />}
+                    element={<ChangePassword user={user} />}
                   />
-                  <Route
-                    path="*"
-                    element={
-                      <RequirePasswordChange mustChangePassword={mustChangePassword}>
-                        <DashboardRoutes user={user} />
-                      </RequirePasswordChange>
-                    }
-                  />
+                  <Route path="*" element={<DashboardRoutes user={user} />} />
                 </Routes>
               </main>
             </div>

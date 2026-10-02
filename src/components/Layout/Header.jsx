@@ -5,33 +5,45 @@ import {
 } from 'lucide-react';
 import { useTheme } from '../../context/ThemeContext';
 import { normalizeRole } from '../../lib/profile';
+import { notificationsApi } from '../../lib/notifications';
+import { relativeTime } from '../../lib/format';
 
-const loadNotifications = () => {
-  try {
-    const stored = JSON.parse(localStorage.getItem('fet_notifications') || '[]');
-    if (stored.length > 0) return stored;
-  } catch (e) { /* ignore */ }
-  const initial = [
-    { id: 1, title: 'New announcement posted', time: '2 min ago', read: false, category: 'Announcement' },
-    { id: 2, title: 'Task assigned to you', time: '1 hour ago', read: false, category: 'Task' },
-    { id: 3, title: 'Assessment results released', time: '3 hours ago', read: true, category: 'Assessment' },
-  ];
-  localStorage.setItem('fet_notifications', JSON.stringify(initial));
-  return initial;
-};
+// The bell used to render a hardcoded three-item array seeded into
+// localStorage['fet_notifications'] and never call the API, while Sidebar.jsx
+// showed a real unread badge from the same endpoint -- two contradictory
+// sources in one shell, and a fabricated inbox shown to every user. It now
+// reads the real owner-scoped inbox (GET /notifications/?unread=true) and maps
+// the server's snake_case row into the shape the panel renders.
+const fromApi = (row) => ({
+  id: row.id,
+  title: row.title,
+  category: row.category,
+  read: Boolean(row.is_read),
+  time: relativeTime(row.created_at),
+});
 
 const Header = ({ user, onLogout }) => {
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const [notifications, setNotifications] = useState(loadNotifications);
+  const [notifications, setNotifications] = useState([]);
   const notifRef = useRef(null);
   const profileRef = useRef(null);
 
   useEffect(() => {
-    localStorage.setItem('fet_notifications', JSON.stringify(notifications));
-  }, [notifications]);
+    let cancelled = false;
+    notificationsApi
+      .list()
+      .then((rows) => {
+        if (!cancelled) setNotifications((Array.isArray(rows) ? rows : []).map(fromApi));
+      })
+      .catch(() => {
+        // Backend unreachable: show an empty inbox rather than fabricated data.
+        if (!cancelled) setNotifications([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const handleClick = (e) => {
@@ -49,9 +61,11 @@ const Header = ({ user, onLogout }) => {
 
   const markAsRead = (id) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    notificationsApi.markRead(id).catch(() => {});
   };
   const markAllAsRead = () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    notificationsApi.markAllRead().catch(() => {});
   };
 
   const handleLogout = () => {

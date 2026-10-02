@@ -36,8 +36,9 @@ const ChangePassword = ({ user, forced = false }) => {
       });
       setDone(true);
       setForm({ current: '', next: '', confirm: '' });
-      // The cached user still says the password must change; refresh it so the
-      // forced-redirect stops firing.
+      // Keep the cached user snapshot fresh. There is no server-side
+      // forced-change flag today (see the removal note in App.jsx), so this is
+      // purely to avoid a stale display name/role after the change.
       try {
         const me = await authApi.me();
         const body = me?.data?.data ?? me?.data;

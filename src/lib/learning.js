@@ -1,4 +1,5 @@
 import api from './api';
+import { normalizeRole } from './profile';
 
 const toData = async (promise) => {
   const res = await promise;
@@ -7,13 +8,46 @@ const toData = async (promise) => {
   return body;
 };
 
+/**
+ * Fetch a binary resource *through the authenticated axios instance* and save it.
+ *
+ * The previous helpers returned a bare absolute URL for use as an `<a href>`.
+ * A plain link navigation does not send the session cookie cross-origin and
+ * bypasses the axios client's withCredentials/CSRF setup, so every material
+ * download and CSV export failed with 401/403 outside a same-origin proxy.
+ * Going through `api.get(..., { responseType: 'blob' })` keeps the session.
+ */
+const downloadBlob = async (path, fallbackName) => {
+  const res = await api.get(path, { responseType: 'blob' });
+  const disposition = res.headers?.['content-disposition'] || '';
+  // Prefer the server's filename; fall back to something sensible.
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  const name = match ? decodeURIComponent(match[1].trim()) : fallbackName;
+
+  const href = URL.createObjectURL(res.data);
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(href);
+  return name;
+};
+
 export const learningApi = {
   // Courses the current user participates in (student enrolled / lecturer teaching).
   getMyCourses: async (role) => {
-    if (role === 'LECTURER') {
+    // Compare through normalizeRole. Callers pass anything from the raw
+    // 'ADMINISTRATOR' the server sends down to a literal 'student'. The old
+    // literals ('LECTURER' / 'admin') matched neither consistently, so a real
+    // administrator matched no branch and silently fell through to the
+    // *student* endpoint.
+    const normalized = normalizeRole(role);
+    if (normalized === 'lecturer') {
       return toData(api.get('/lecturers/me/courses/'));
     }
-    if (role === 'admin') {
+    if (normalized === 'admin') {
       const data = await toData(api.get('/course-offerings/'));
       return (data || []).map((c) => ({
         offering_id: c.id,
@@ -46,6 +80,9 @@ export const learningApi = {
     return body && typeof body === 'object' && 'data' in body ? body.data : body;
   },
   getDownloadUrl: (fileId) => `${api.defaults.baseURL}/files/${fileId}/`,
+  // Authenticated download. Prefer this over `getDownloadUrl`, which returns a
+  // bare cross-origin URL that cannot carry the session cookie.
+  downloadFile: (fileId) => downloadBlob(`/files/${fileId}/`, `download-${fileId}`),
   // Assignments (teacher sets due date, late policy, submission limit).
   getAssignments: (offeringId) => toData(api.get(`/course-offerings/${offeringId}/assignments/`)),
   createAssignment: (offeringId, data) => toData(api.post(`/course-offerings/${offeringId}/assignments/`, data)),
@@ -69,6 +106,8 @@ export const learningApi = {
   resolveDispute: (markId, response) => toData(api.patch(`/assessment-marks/${markId}/`, { dispute_response: response })),
   myAssessments: () => toData(api.get('/students/me/assessments/')),
   assessmentExportUrl: (assessmentId) => `${api.defaults.baseURL}/assessments/${assessmentId}/export.csv`,
+  downloadAssessmentExport: (assessmentId) =>
+    downloadBlob(`/assessments/${assessmentId}/export.csv`, `assessment-${assessmentId}.csv`),
   // Combined grades: several CAs (each on its own marking scale) rolled up
   // into one reported grade, e.g. one CA out of 30.
   getGroups: (offeringId) => toData(api.get(`/course-offerings/${offeringId}/assessment-groups/`)),
@@ -77,4 +116,6 @@ export const learningApi = {
   updateGroup: (groupId, data) => toData(api.patch(`/assessment-groups/${groupId}/`, data)),
   deleteGroup: (groupId) => api.delete(`/assessment-groups/${groupId}/`),
   groupExportUrl: (groupId) => `${api.defaults.baseURL}/assessment-groups/${groupId}/export.csv`,
+  downloadGroupExport: (groupId) =>
+    downloadBlob(`/assessment-groups/${groupId}/export.csv`, `assessment-group-${groupId}.csv`),
 };
