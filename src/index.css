@@ -1,0 +1,506 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: #F6F7FB;
+    color: #111827;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #F6F7FB;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #C5C7CF;
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #9CA0AC;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    color: #111827;
+    font-weight: 600;
+  }
+
+  input:focus,
+  textarea:focus,
+  select:focus {
+    outline: none;
+  }
+}
+
+/* ============================================================
+   STATIC DARK TECH-GRID BACKGROUND
+   ============================================================ */
+
+.fet-tech-grid {
+  background-color: #080D16;
+  background-image:
+    linear-gradient(
+      rgba(255,255,255,0.035) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      rgba(255,255,255,0.035) 1px,
+      transparent 1px
+    );
+  background-size: 32px 32px;
+}
+
+/* ============================================================
+   APPLICATION SHELL
+   ============================================================ */
+
+#root {
+  min-height: 100vh;
+  background-color: #F6F7FB;
+}
+
+.app-container {
+  min-height: 100vh;
+  background: transparent;
+}
+
+/* ============================================================
+   SIDEBAR
+   ============================================================ */
+
+.sidebar {
+  background-color: #0F0B3D !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.55);
+  transition: all 0.15s ease;
+  text-decoration: none;
+}
+
+.sidebar .nav-item:hover {
+  background-color: rgba(63, 53, 181, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.sidebar .nav-item.active {
+  background-color: #3F35B5;
+  color: #FFFFFF;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(63, 53, 181, 0.35);
+}
+
+.sidebar .nav-item.active svg {
+  color: #FFFFFF;
+}
+
+.sidebar .nav-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: rgba(255, 255, 255, 0.25);
+  padding: 16px 16px 6px;
+}
+
+/* ============================================================
+   CARDS
+   ============================================================ */
+
+.fet-card {
+  background-color: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: box-shadow 0.15s ease;
+}
+
+.fet-card:hover {
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06);
+}
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+
+.fet-btn-primary {
+  background-color: #3F35B5;
+  color: #FFFFFF;
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 13.5px;
+  transition: all 0.15s ease;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.fet-btn-primary:hover {
+  background-color: #30278F;
+  box-shadow: 0 2px 12px rgba(63, 53, 181, 0.3);
+}
+
+.fet-btn-secondary {
+  background-color: #FFFFFF;
+  color: #374151;
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 13.5px;
+  transition: all 0.15s ease;
+  border: 1px solid #E5E7EB;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.fet-btn-secondary:hover {
+  background-color: #F6F7FB;
+  border-color: #D1D5DB;
+}
+
+.fet-btn-danger {
+  background-color: #DC2626;
+  color: #FFFFFF;
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 13.5px;
+  transition: all 0.15s ease;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.fet-btn-danger:hover {
+  background-color: #B91C1C;
+}
+
+.fet-btn-success {
+  background-color: #16A34A;
+  color: #FFFFFF;
+  padding: 10px 20px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 13.5px;
+  transition: all 0.15s ease;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.fet-btn-success:hover {
+  background-color: #15803D;
+}
+
+/* ============================================================
+   FORM INPUTS
+   ============================================================ */
+
+.fet-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #E5E7EB;
+  border-radius: 10px;
+  font-size: 13.5px;
+  color: #111827;
+  background-color: #FFFFFF;
+  transition: all 0.15s ease;
+}
+
+.fet-input:focus {
+  border-color: #3F35B5;
+  box-shadow: 0 0 0 3px rgba(63, 53, 181, 0.1);
+}
+
+.fet-input::placeholder {
+  color: #9CA3AF;
+}
+
+.fet-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 6px;
+}
+
+.fet-select {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #E5E7EB;
+  border-radius: 10px;
+  font-size: 13.5px;
+  color: #111827;
+  background-color: #FFFFFF;
+  transition: all 0.15s ease;
+  appearance: auto;
+}
+
+.fet-select:focus {
+  border-color: #3F35B5;
+  box-shadow: 0 0 0 3px rgba(63, 53, 181, 0.1);
+}
+
+/* ============================================================
+   STATUS BADGES
+   ============================================================ */
+
+.fet-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.fet-badge-active {
+  background-color: #DCFCE7;
+  color: #166534;
+}
+
+.fet-badge-completed {
+  background-color: #DCFCE7;
+  color: #166534;
+}
+
+.fet-badge-pending {
+  background-color: #FEF3C7;
+  color: #92400E;
+}
+
+.fet-badge-inactive {
+  background-color: #F3F4F6;
+  color: #6B7280;
+}
+
+.fet-badge-present {
+  background-color: #DCFCE7;
+  color: #166534;
+}
+
+.fet-badge-absent {
+  background-color: #FEE2E2;
+  color: #991B1B;
+}
+
+.fet-badge-late {
+  background-color: #FEF3C7;
+  color: #92400E;
+}
+
+.fet-badge-review {
+  background-color: #FEE2E2;
+  color: #991B1B;
+}
+
+.fet-badge-overdue {
+  background-color: #FEE2E2;
+  color: #991B1B;
+}
+
+.fet-badge-draft {
+  background-color: #F3F4F6;
+  color: #6B7280;
+}
+
+.fet-badge-submitted {
+  background-color: #DBEAFE;
+  color: #1E40AF;
+}
+
+.fet-badge-info {
+  background-color: #DBEAFE;
+  color: #1E40AF;
+}
+
+.fet-badge-warning {
+  background-color: #FEF3C7;
+  color: #92400E;
+}
+
+.fet-badge-danger {
+  background-color: #FEE2E2;
+  color: #991B1B;
+}
+
+/* ============================================================
+   TABLES
+   ============================================================ */
+
+.fet-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.fet-table thead th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #6B7280;
+  background-color: #F9FAFB;
+  border-bottom: 1px solid #E5E7EB;
+}
+
+.fet-table tbody td {
+  padding: 10px 14px;
+  font-size: 13.5px;
+  color: #111827;
+  border-bottom: 1px solid #F3F4F6;
+}
+
+.fet-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.fet-table tbody tr:hover {
+  background-color: #F9FAFB;
+}
+
+/* ============================================================
+   DASHBOARD WELCOME BANNER
+   ============================================================ */
+
+.fet-welcome-banner {
+  background: linear-gradient(135deg, #0F0B3D 0%, #3F35B5 100%);
+  border-radius: 16px;
+  padding: 24px 28px;
+  color: #FFFFFF;
+  position: relative;
+  overflow: hidden;
+}
+
+.fet-welcome-banner::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  right: -10%;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.fet-welcome-banner::after {
+  content: '';
+  position: absolute;
+  bottom: -60%;
+  right: 5%;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ============================================================
+   PROGRESS BAR
+   ============================================================ */
+
+.fet-progress-bar {
+  width: 100%;
+  height: 6px;
+  background-color: #F3F4F6;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.fet-progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3F35B5, #6769FA);
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+/* ============================================================
+   UTILITY
+   ============================================================ */
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ============================================================
+   LOADING SPINNER
+   ============================================================ */
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ============================================================
+   RESPONSIVE HELPERS
+   ============================================================ */
+
+@media (max-width: 768px) {
+  .fet-desktop-only {
+    display: none !important;
+  }
+}
+
+@media (min-width: 769px) {
+  .fet-mobile-only {
+    display: none !important;
+  }
+}
