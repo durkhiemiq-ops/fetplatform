@@ -30,12 +30,9 @@ const Login = ({ onLogin }) => {
       // Tokens are set as httpOnly cookies by the backend — JS never sees them.
       const user = response.data?.data ?? response.data;
 
-      // User snapshot only (cached for display; re-validated via /me on load).
-      localStorage.setItem('fet_auth', 'true');
-      localStorage.setItem('fet_user', JSON.stringify(user));
-      localStorage.setItem('fet_user_role', user.role || 'student');
-      localStorage.setItem('fet_user_name', user.fullName || user.email?.split('@')[0] || 'User');
-
+      // Identity is handed to App, which publishes it through SessionProvider.
+// Nothing is cached in localStorage — the httpOnly session cookie decides
+      // whether the session exists (AGENTS.md).
       setIsLoading(false);
       onLogin(user);
     } catch (err) {

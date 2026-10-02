@@ -36,14 +36,11 @@ const ChangePassword = ({ user, forced = false }) => {
       });
       setDone(true);
       setForm({ current: '', next: '', confirm: '' });
-      // Keep the cached user snapshot fresh. There is no server-side
-      // forced-change flag today (see the removal note in App.jsx), so this is
-      // purely to avoid a stale display name/role after the change.
+      // Re-read the record from the server so nothing stale is shown. There is
+      // no server-side forced-change flag today (see the note in App.jsx).
       try {
-        const me = await authApi.me();
-        const body = me?.data?.data ?? me?.data;
-        localStorage.setItem('fet_user', JSON.stringify(body));
-      } catch { /* the reload below re-reads it anyway */ }
+        await authApi.me();
+      } catch { /* the redirect below re-validates the session anyway */ }
     } catch (err) {
       setError(errorMessage(err, 'Could not change your password.'));
     } finally {

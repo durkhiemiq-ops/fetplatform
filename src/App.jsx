@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext';
+import { SessionProvider, useSession } from './context/SessionContext';
 import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
 import DashboardHome from './components/Dashboard/DashboardHome';
@@ -29,37 +30,20 @@ import MobileSimulator from './components/Mobile/MobileSimulator';
 import MyCourses from './Pages/Lessons/MyCourses';
 import CourseDetail from './Pages/Lessons/CourseDetail';
 import { authApi } from './lib/auth';
-import { normalizeRole } from './lib/profile';
 
+// Route guards read the verified session (populated from GET /auth/me/ after a
+// successful session-cookie check), not localStorage. These are a UI
+// convenience only: the backend remains the sole enforcement point, per
+// AGENTS.md and BR-003.
 const RequireRole = ({ role, children }) => {
-  let userRole = 'student';
-  try {
-    const stored = localStorage.getItem('fet_user');
-    const user = stored ? JSON.parse(stored) : null;
-    userRole = user?.role || localStorage.getItem('fet_user_role') || 'student';
-  } catch {
-    userRole = localStorage.getItem('fet_user_role') || 'student';
-  }
-
-  if (normalizeRole(userRole) !== normalizeRole(role)) {
-    return <Navigate to="/" replace />;
-  }
+  const { role: currentRole } = useSession();
+  if (currentRole !== role) return <Navigate to="/" replace />;
   return children;
 };
 
 const ExcludeRole = ({ role, children }) => {
-  let userRole = 'student';
-  try {
-    const stored = localStorage.getItem('fet_user');
-    const user = stored ? JSON.parse(stored) : null;
-    userRole = user?.role || localStorage.getItem('fet_user_role') || 'student';
-  } catch {
-    userRole = localStorage.getItem('fet_user_role') || 'student';
-  }
-
-  if (normalizeRole(userRole) === normalizeRole(role)) {
-    return <Navigate to="/lessons" replace />;
-  }
+  const { role: currentRole } = useSession();
+  if (currentRole === role) return <Navigate to="/lessons" replace />;
   return children;
 };
 
@@ -133,41 +117,33 @@ function App() {
         const userData = response.data?.data ?? response.data;
         setUser(userData);
         setIsAuthenticated(true);
-        // Update cached user snapshot
-        localStorage.setItem('fet_auth', 'true');
-        localStorage.setItem('fet_user', JSON.stringify(userData));
-        localStorage.setItem('fet_user_role', userData.role || 'student');
-        localStorage.setItem('fet_user_name', userData.fullName || userData.email?.split('@')[0] || 'User');
       } catch (error) {
-        // No valid session (or refresh failed) — clear cache, show login.
-        localStorage.removeItem('fet_auth');
-        localStorage.removeItem('fet_user');
-        localStorage.removeItem('fet_user_role');
-        localStorage.removeItem('fet_user_name');
+        // No valid session (or refresh failed) — show login. Identity is not
+        // cached in localStorage; the httpOnly session cookie is the only
+        // thing that decides whether this branch runs (AGENTS.md).
+        setUser(null);
+        setIsAuthenticated(false);
       }
       setIsLoading(false);
     };
     initAuth();
   }, []);
 
-  useEffect(() => {
-    const onProfileUpdate = () => {
-      try {
-        const u = JSON.parse(localStorage.getItem('fet_user') || '{}');
-        if (u && u.fullName) setUser(u);
-      } catch { /* ignore */ }
+  // Identity lives in React state + SessionProvider now, not localStorage.
+// ProfilePage re-reads the authoritative record itself after saving, so there
+// is nothing to listen for on a profile change.
+useEffect(() => {
+    const onExpired = () => {
+      setIsAuthenticated(false);
+      setUser(null);
     };
-    window.addEventListener('fet-profile-updated', onProfileUpdate);
-    return () => window.removeEventListener('fet-profile-updated', onProfileUpdate);
+    window.addEventListener('fet-session-expired', onExpired);
+    return () => window.removeEventListener('fet-session-expired', onExpired);
   }, []);
 
   const handleLogin = (userData) => {
     setIsAuthenticated(true);
     setUser(userData);
-    localStorage.setItem('fet_auth', 'true');
-    localStorage.setItem('fet_user', JSON.stringify(userData));
-    localStorage.setItem('fet_user_role', userData.role || 'student');
-    localStorage.setItem('fet_user_name', userData.fullName || userData.email?.split('@')[0] || 'User');
   };
 
   const handleLogout = async () => {
@@ -178,11 +154,6 @@ function App() {
     } finally {
       setIsAuthenticated(false);
       setUser(null);
-      localStorage.removeItem('fet_auth');
-      localStorage.removeItem('fet_user');
-      localStorage.removeItem('fet_user_role');
-      localStorage.removeItem('fet_user_name');
-      localStorage.removeItem('access_token');
     }
   };
 
@@ -204,29 +175,34 @@ function App() {
     return <Login onLogin={handleLogin} />;
   }
 
-  const userName = user?.fullName || user?.email?.split('@')[0] || 'User';
-  const userRole = user?.role || 'student';
+  return (
+    <SessionProvider user={user} isAuthenticated={isAuthenticated}>
+      <ThemeProvider>
+        <Router>
+          <Shell user={user} onLogout={handleLogout} />
+        </Router>
+      </ThemeProvider>
+    </SessionProvider>
+  );
+}
+
+// Split out so it renders *inside* SessionProvider and can call useSession().
+function Shell({ user, onLogout }) {
+  const { userName, role } = useSession();
 
   return (
-    <ThemeProvider>
-      <Router>
-          <div className="app-container flex h-screen bg-page-bg">
-            <Sidebar onLogout={handleLogout} userName={userName} userRole={userRole} />
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              <Header user={user} onLogout={handleLogout} />
-              <main className="flex-1 overflow-y-auto p-4 md:p-6">
-                <Routes>
-                  <Route
-                    path="/change-password"
-                    element={<ChangePassword user={user} />}
-                  />
-                  <Route path="*" element={<DashboardRoutes user={user} />} />
-                </Routes>
-              </main>
-            </div>
-          </div>
-        </Router>
-    </ThemeProvider>
+    <div className="app-container flex h-screen bg-page-bg">
+      <Sidebar onLogout={onLogout} userName={userName} userRole={role} />
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <Header user={user} onLogout={onLogout} />
+        <main className="flex-1 overflow-y-auto p-4 md:p-6">
+          <Routes>
+            <Route path="/change-password" element={<ChangePassword user={user} />} />
+            <Route path="*" element={<DashboardRoutes user={user} />} />
+          </Routes>
+        </main>
+      </div>
+    </div>
   );
 }
 

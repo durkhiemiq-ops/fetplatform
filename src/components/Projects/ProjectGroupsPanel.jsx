@@ -4,7 +4,7 @@ import {
   UserCheck, FolderKanban, ChevronDown, ChevronUp, Search, X, Info,
 } from 'lucide-react';
 import { projectsApi } from '../../lib/projects';
-import { normalizeRole } from '../../lib/profile';
+import { useSession } from '../../context/SessionContext';
 
 const SCOPE_LABEL = {
   INDIVIDUAL: 'Individual',
@@ -18,7 +18,8 @@ const SCOPE_LABEL = {
  * perform. Students never see this panel -- the API refuses them.
  */
 const ProjectGroupsPanel = ({ project, canManageGroups, canManageProject, onChanged }) => {
-  const role = normalizeRole(localStorage.getItem('fet_user_role'));
+  const { role: sessionRole } = useSession();
+  const role = sessionRole;
   const [groups, setGroups] = useState([]);
   const [unassigned, setUnassigned] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -340,7 +341,7 @@ const ProjectGroupsPanel = ({ project, canManageGroups, canManageProject, onChan
       {canManageGroups && project.scope === 'CLASS_WIDE' && (
         <p className="text-[11px] text-text-secondary flex items-start gap-1">
           <Info size={12} className="mt-0.5 shrink-0" />
-          {role === 'LECTURER'
+          {role === 'lecturer'
             ? 'The class delegate can also create groups and move students, but cannot edit this project or enter marks.'
             : 'You can manage groups for this project, but not the project settings or marks.'}
         </p>

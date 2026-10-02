@@ -69,10 +69,8 @@ const Header = ({ user, onLogout }) => {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('fet_auth');
-    localStorage.removeItem('fet_user');
-    localStorage.removeItem('fet_user_role');
-    localStorage.removeItem('fet_user_name');
+    // Server destroys the session; App drops the in-memory identity. Nothing
+    // to clear in localStorage because nothing is cached there.
     if (onLogout) onLogout();
     else window.location.reload();
   };

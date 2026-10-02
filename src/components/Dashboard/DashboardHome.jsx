@@ -3,11 +3,13 @@ import StudentDashboard from './StudentDashboard';
 import LecturerDashboard from './LecturerDashboard';
 import CoordinatorDashboard from './CoordinatorDashboard';
 import AdminDashboard from '../../Pages/Admin/AdminDashboard';
-import { normalizeRole } from '../../lib/profile';
+import { useSession } from '../../context/SessionContext';
 
 const DashboardHome = () => {
-  const user = JSON.parse(localStorage.getItem('fet_user') || '{}');
-  const role = normalizeRole(user?.role || localStorage.getItem('fet_user_role'));
+  // Dispatch on the verified session role, not localStorage. `COORDINATOR` is
+  // not a backend User.Role value, so the coordinator branch is unreachable
+  // dead UI; it is kept only until that role is actually implemented.
+  const { role, user } = useSession();
 
   if (role === 'admin') {
     return <AdminDashboard user={user} />;

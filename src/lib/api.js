@@ -66,11 +66,14 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
-const clearAuthCache = () => {
-  localStorage.removeItem('fet_auth');
-  localStorage.removeItem('fet_user');
-  localStorage.removeItem('fet_user_role');
-  localStorage.removeItem('fet_user_name');
+// Nothing is cached in localStorage any more (AGENTS.md): identity lives in
+// React state via SessionProvider, and the httpOnly session cookie is the only
+// authority. This hook exists so the 401 interceptor can still tell the app to
+// drop to the login screen.
+const notifySessionExpired = () => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('fet-session-expired'));
+  }
 };
 
 api.interceptors.response.use(
@@ -86,7 +89,9 @@ api.interceptors.response.use(
         await api.post('/auth/refresh/', null);
         return api(originalRequest);
       } catch {
-        clearAuthCache();
+        // The session is genuinely dead. Tell the app to return to login
+        // rather than clearing storage keys nothing reads any more.
+        notifySessionExpired();
         if (window.location.pathname !== '/login') {
           window.location.href = '/login';
         }

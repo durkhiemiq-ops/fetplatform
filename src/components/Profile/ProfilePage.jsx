@@ -34,7 +34,7 @@ const ProfilePage = () => {
   const [success, setSuccess] = useState('');
   const [form, setForm] = useState({});
 
-  const role = normalizeRole(me?.role || localStorage.getItem('fet_user_role'));
+  const role = normalizeRole(me?.role || '');
   const isStudent = role === 'student';
   const isLecturer = role === 'lecturer';
 
@@ -100,10 +100,10 @@ const ProfilePage = () => {
       const updated = await profileApi.me();
       setMe(updated);
       setIsEditing(false);
-      setSuccess('Profile updated successfully!');
-      localStorage.setItem('fet_user', JSON.stringify(updated));
-      localStorage.setItem('fet_user_role', updated.role || '');
-      localStorage.setItem('fet_user_name', updated.full_name || updated.email?.split('@')[0] || 'User');
+      // Only first_name and last_name are writable on UserSerializer; every
+      // other field built above is read_only or not on the model. Reporting an
+      // unqualified success made a no-op look like a saved profile.
+      setSuccess('Name updated successfully.');
       window.dispatchEvent(new CustomEvent('fet-profile-updated'));
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {

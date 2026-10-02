@@ -6,7 +6,7 @@ import {
 import { academicsApi, DAY_NAMES } from '../../lib/academics';
 import { errorMessage } from '../../lib/enrollment';
 import { learningApi } from '../../lib/learning';
-import { normalizeRole } from '../../lib/profile';
+import { useSession } from '../../context/SessionContext';
 import { formatClock } from '../../lib/format';
 
 const DAYS = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -23,13 +23,12 @@ const Timetable = () => {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptySlot);
   const [busy, setBusy] = useState(false);
-  const [isStaff, setIsStaff] = useState(false);
+  const { role: sessionRole, isStaff: sessionIsStaff } = useSession();
+  const [isStaff, setIsStaff] = useState(sessionIsStaff);
 
   useEffect(() => {
-    let user = {};
-    try { user = JSON.parse(localStorage.getItem('fet_user') || '{}'); } catch { /* ignore */ }
-    setIsStaff(normalizeRole(user.role) !== 'student');
-  }, []);
+    setIsStaff(sessionIsStaff);
+  }, [sessionIsStaff]);
 
   // Offerings this user is allowed to see a timetable for.
   useEffect(() => {
@@ -37,10 +36,7 @@ const Timetable = () => {
       setLoading(true);
       setError('');
       try {
-        let user = {};
-        try { user = JSON.parse(localStorage.getItem('fet_user') || '{}'); } catch { /* ignore */ }
-        const role = normalizeRole(user.role);
-        const courses = await learningApi.getMyCourses(role === 'admin' ? 'admin' : role);
+        const courses = await learningApi.getMyCourses(sessionRole);
         setOfferings(courses || []);
         if (courses?.length) setOfferingId((prev) => prev || courses[0].offering_id);
       } catch (err) {
@@ -49,7 +45,7 @@ const Timetable = () => {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [sessionRole]);
 
   const loadSlots = useCallback(async (id) => {
     if (!id) { setSlots([]); return; }

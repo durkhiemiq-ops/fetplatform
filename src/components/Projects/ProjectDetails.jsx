@@ -5,7 +5,7 @@ import {
   ClipboardCheck, Crown, Trash2, Download, AlertCircle, UserPlus,
 } from 'lucide-react';
 import { projectsApi } from '../../lib/projects';
-import { normalizeRole } from '../../lib/profile';
+import { useSession } from '../../context/SessionContext';
 import { statusBadge, formatDateTime } from './projectUi';
 
 const TABS = ['Overview', 'Members', 'Tasks', 'Milestones', 'Documents', 'Activity', 'Assessments'];
@@ -25,10 +25,12 @@ const taskStatusBadge = (status) => {
 const ProjectDetails = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const role = normalizeRole(localStorage.getItem('fet_user_role'));
-  const canManage = role !== 'student';
-  let currentUserId = '';
-  try { currentUserId = JSON.parse(localStorage.getItem('fet_user') || '{}').id || ''; } catch { /* ignore */ }
+  // Role and identity come from the verified session, not localStorage
+  // (AGENTS.md). currentUserId previously read localStorage['fet_user'], which
+  // stored a fabricated `Date.now()` id on the deleted signup path.
+  const { role, isStaff, user } = useSession();
+  const canManage = isStaff || role !== 'student';
+  const currentUserId = user?.id || '';
 
   const [project, setProject] = useState(null);
   const [groups, setGroups] = useState([]);

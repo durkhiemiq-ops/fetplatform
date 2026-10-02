@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Plus, Search, X, FolderKanban, RefreshCw, AlertCircle, Users, Layers, User } from 'lucide-react';
 import { projectsApi } from '../../lib/projects';
 import { attendanceApi } from '../../lib/attendance';
-import { normalizeRole } from '../../lib/profile';
+import { useSession } from '../../context/SessionContext';
 import ProjectCard from './ProjectCard';
 import ProjectForm from './ProjectForm';
 import { STATUS_LABELS } from './projectUi';
@@ -24,8 +24,9 @@ const SCOPE_ICON = { INDIVIDUAL: User, CLASS_WIDE: Users, GROUP_SPECIFIC: Layers
 
 const ProjectsList = () => {
   const navigate = useNavigate();
-  const role = normalizeRole(localStorage.getItem('fet_user_role'));
-  const canManage = role === 'lecturer' || role === 'admin';
+  // Role comes from the verified session, not localStorage (AGENTS.md).
+  const { isStaff, isAdmin } = useSession();
+  const canManage = isStaff;
 
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -194,7 +195,7 @@ const ProjectsList = () => {
             const isOpen = expandedId === project.id;
             const canManageProject = canManage;
             const canManageGroups = canManage && (
-              project.scope === 'CLASS_WIDE' || role === 'admin'
+              project.scope === 'CLASS_WIDE' || isAdmin
             );
             return (
               <div key={project.id} className="space-y-3">
