@@ -1,124 +1,96 @@
-# FET Platform - Faculty of Engineering and Technology
+# FET Platform frontend
 
-Academic Learning and Project Management System built with Vite + React (frontend) and Django REST Framework (backend).
+The repository has one React frontend in `frontend/` and one Django backend in
+`backend/`. The client uses React 18, Vite, Tailwind, React Router, React Query,
+and axios. The backend uses Django 6, Django REST Framework, PostgreSQL, and Redis.
 
-## 🚀 Features
+## Integration status
 
-### Core Features
-- ✅ **Dashboard** - Role-specific dashboards for Students, Lecturers, Coordinators, Admins
-- ✅ **Course Management** - Course catalogue, enrollment, timetables
-- ✅ **Lesson Materials** - Upload, download, and manage course learning materials
-- ✅ **Project Management** - Create, read, update, delete projects with groups, tasks, milestones
-- ✅ **Task Management** - Create, update, delete tasks with status tracking
-- ✅ **Group Management** - Create, update, delete groups
-- ✅ **Attendance Tracking** - QR-based attendance with projector/station modes (UI ready, backend integration in progress)
-- ✅ **Assessment System** - Rubric-based continuous assessment
-- ✅ **Contribution Tracking** - Monitor student contributions
-- ✅ **Announcements** - Post and manage announcements with scope (faculty, department, course)
-- ✅ **Milestones** - Track project milestones
-- ✅ **Admin Panel** - User management, system statistics
+The UI contains courses, attendance, learning materials, assessments, projects,
+announcements, and administration screens. Backend alignment is in progress:
+several screens call flat API routes that the current backend does not yet serve,
+and some existing payloads differ. Screen availability does not establish that
+the workflow is implemented or verified end to end. See
+[the implementation plan](../docs/IMPLEMENTATION_PLAN.md) for the staged work.
 
-### Technical Features
-- ✅ **API Integration** - Connects to Django REST backend via JWT authentication (httpOnly cookies)
-- ✅ **React Query** - Server state management with caching and background updates
-- ✅ **Responsive Design** - Works on all screen sizes with mobile-friendly sidebar
-- ✅ **Dark/Light Mode** - Using the FET design system
-- ✅ **Search & Filter** - Find what you need quickly
-- ✅ **Modal Forms** - Clean, intuitive CRUD operations
+The current signup flow also fabricates a local account and stores its password;
+that frontend authentication defect remains scheduled for repair. Local browser
+state must not establish identity, role, enrollment, or other domain authority.
 
-## 📦 Installation
+## Local setup
 
-### Prerequisites
-- Node.js (v18 or higher)
-- npm (v9 or higher)
-- Python 3.11+ (for backend)
-- PostgreSQL (or SQLite for development)
+Run shell commands with the required `rtk` prefix. From `frontend/`:
 
-### Backend Setup
-```bash
-cd ../backend
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py seed_demo
-python manage.py runserver
+```powershell
+rtk proxy npm install
+rtk proxy npm run dev
 ```
 
-### Frontend Setup
-```bash
-cd FET-official
-npm install
-npm run dev
+Open [http://localhost:3000](http://localhost:3000). The shared axios client reads
+`VITE_API_BASE` and defaults to `http://localhost:8000`; it appends `/api/v1`.
+Set the backend origin, without `/api/v1`, in the ignored frontend `.env` if an
+override is needed. Frontend environment variables are public client settings;
+do not put secrets in them. Vite also proxies `/api` to `http://localhost:8000`,
+although the default axios URL accesses the backend directly.
+
+The backend requires system Python 3.14 on this machine; its virtual environment
+interpreter is blocked by Application Control. With the ignored backend `.env`
+configured and PostgreSQL/Redis available, run from `backend/`:
+
+```powershell
+rtk proxy python manage.py migrate
+rtk proxy python manage.py runserver 127.0.0.1:8000
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+`manage.py` defaults to `config.settings`, the real PostgreSQL/Redis stack.
+`config.settings_dev` is for isolated SQLite testing and local runs; it still
+imports base settings and requires a secret key. Its cache uses Redis when
+`USE_REDIS_CACHE` is enabled, otherwise local memory. Never print or commit `.env`
+contents. Demo seeding is not part of the standard startup procedure.
 
-## 🔐 Demo Credentials (after seeding backend)
+## Authentication and API boundary
 
-| Role    | Email                      | Password    |
-|---------|----------------------------|-------------|
-| Admin   | admin@fet.edu              | admin123    |
-| Lecturer| dr.smith@fet.edu           | lecturer123 |
-| Student | john.doe@student.fet.edu   | student123  |
+Authentication uses Django session cookies, not JWT. The shared client in
+`src/lib/api.js` sends requests with credentials and obtains the CSRF cookie
+through `/accounts/csrf/` before unsafe requests. It sends `X-CSRFToken` from that
+cookie. `/auth/refresh/` checks session validity; it does not rotate a JWT.
+Identity and permissions must come from the authenticated backend session.
 
-## 🏗️ Architecture
+Domain clients live in `src/lib/*.js`; `src/lib/auth.js` contains the authentication
+requests. Keep snake_case on the wire and adapt any UI shape at that client
+boundary. Use actual server responses instead of fabricated local successes.
+The approved route target is flat `/api/v1/`; current backend prefixes still
+need reconciliation. See `backend/config/urls.py` for routes that exist today.
 
-- **Frontend**: Vite + React 18, React Router, React Query, Axios, Lucide Icons, Tailwind CSS
-- **Backend**: Django 4.2, Django REST Framework, SimpleJWT, PostgreSQL
-- **Authentication**: JWT in httpOnly cookies with automatic refresh
-- **State Management**: React Query for server state, React Context for UI state
+## Source layout
 
-## 📁 Project Structure
-
-```
-FET-official/
-├── public/
-├── src/
-│   ├── components/        # Reusable UI components
-│   │   ├── Auth/          # Login, SignUp
-│   │   ├── Layout/        # Sidebar, Header
-│   │   ├── Dashboard/     # Role-specific dashboards
-│   │   ├── Attendance/    # Attendance management
-│   │   ├── Projects/      # Project, Task, Group components
-│   │   ├── Assessment/    # Assessment and contributions
-│   │   ├── Announcements/ # Announcement list/form
-│   │   ├── Academic/      # Academic calendar, semester selector
-│   │   └── ...
-│   ├── Pages/             # Page-level components
-│   │   ├── Courses/       # Course catalogue
-│   │   ├── Lessons/       # Lesson materials (new)
-│   │   └── Admin/         # Admin pages
-│   ├── lib/               # API client, React Query provider, auth helpers
-│   ├── context/           # React Context for global UI state
-│   ├── data/              # Mock data (legacy, being phased out)
-│   ├── App.jsx            # Main app with routing
-│   └── main.jsx           # Entry point with QueryProvider
-├── index.html
-├── package.json
-├── vite.config.js
-└── tailwind.config.js
+```text
+frontend/
+  src/
+    components/   Reusable UI components and feature screens
+    Pages/        Page components
+    lib/          Shared API client, domain clients, query and auth helpers
+    context/      Existing React context
+    App.jsx       Application routing
+    main.jsx      Entry point
+  index.html
+  package.json
+  vite.config.js
+  tailwind.config.js
 ```
 
-## 🔧 Development
+## Validation
 
-```bash
-# Start frontend only (requires backend running on port 8000)
-npm run dev
+From `frontend/`:
 
-# Build for production
-npm run build
-
-# Lint
-npm run lint
+```powershell
+rtk proxy npm run lint
+rtk proxy npm run build
 ```
 
-## 🐳 Docker (Coming Soon)
-
-```bash
-docker-compose up --build
-```
-
-## 📝 License
+These checks validate source and bundling. Successful results do not establish
+API compatibility or browser workflow correctness. Backend tests run from
+`backend/` with `python manage.py test --settings=config.settings_dev`; PostgreSQL
+concurrency and Redis atomicity require separate verification.
 
 Internal use only - Faculty of Engineering and Technology.
