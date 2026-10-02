@@ -75,7 +75,11 @@ const DashboardRoutes = ({ user }) => (
       element={<RequireRole role="student"><RegistrationPage /></RequireRole>}
     />
     <Route path="/academic" element={<AcademicCalendar />} />
-    <Route path="/mobile-simulator" element={<MobileSimulator />} />
+    {/* Dev-only device-frame preview tool. It has no sidebar link and is
+        deliberately unreachable in a production build. */}
+    {import.meta.env.DEV ? (
+      <Route path="/mobile-simulator" element={<MobileSimulator />} />
+    ) : null}
     <Route path="/settings" element={<ProfilePage user={user} />} />
     <Route
       path="/admin/dashboard"
