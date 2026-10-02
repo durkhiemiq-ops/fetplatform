@@ -1,13 +1,15 @@
 import React from 'react';
-import { Clock } from 'lucide-react';
+import { Clock, Inbox } from 'lucide-react';
 
-const ActivityFeed = ({ activities }) => {
-  const defaultActivities = [
-    { user: 'System', action: 'Welcome to FET Platform', time: 'Just now' },
-    { user: 'Dr. Vance', action: 'posted new announcement', time: '1 hour ago' },
-  ];
-
-  const items = activities && activities.length > 0 ? activities : defaultActivities;
+/**
+ * Recent activity feed.
+ *
+ * Takes an explicit list. It used to fall back to two invented rows
+ * ("Dr. Vance posted new announcement"), which meant a screen with no data
+ * still looked populated. An empty feed now says so.
+ */
+const ActivityFeed = ({ activities = [] }) => {
+  const items = (activities || []).filter(Boolean).slice(0, 4);
 
   return (
     <div className="fet-card p-4 md:p-5">
@@ -15,24 +17,34 @@ const ActivityFeed = ({ activities }) => {
         <Clock size={16} className="text-primary" strokeWidth={2} />
         Recent Activity
       </h3>
-      <div className="space-y-1">
-        {items.slice(0, 4).map((activity, i) => (
-          <div key={i} className="flex gap-3 p-2.5 rounded-lg hover:bg-page-bg transition-colors">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ backgroundColor: 'rgba(63,53,181,0.08)' }}>
-              <span className="text-[13px]">
-                {activity.user === 'System' ? '⚙' : '👤'}
-              </span>
+      {items.length === 0 ? (
+        <div className="text-center py-6">
+          <Inbox size={26} className="mx-auto text-text-secondary/40" />
+          <p className="text-[13px] text-text-secondary mt-2">Nothing recent yet</p>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {items.map((activity, i) => (
+            <div key={activity.id || i} className="flex gap-3 p-2.5 rounded-lg hover:bg-page-bg transition-colors">
+              <div
+                className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                style={{ backgroundColor: 'rgba(63,53,181,0.08)' }}
+              >
+                <span className="text-[13px]">{activity.system ? '⚙' : '👤'}</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] text-text-primary">
+                  <span className="font-semibold">{activity.user}</span>{' '}
+                  <span className="text-text-secondary">{activity.action}</span>
+                </p>
+                {activity.time ? (
+                  <p className="text-[11px] text-text-secondary mt-0.5">{activity.time}</p>
+                ) : null}
+              </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-[13px] text-text-primary">
-                <span className="font-semibold">{activity.user}</span>{' '}
-                <span className="text-text-secondary">{activity.action}</span>
-              </p>
-              <p className="text-[11px] text-text-secondary mt-0.5">{activity.time}</p>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

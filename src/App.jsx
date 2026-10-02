@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { AppProvider, useAppContext } from './context/AppContext';
+import { ThemeProvider } from './context/ThemeContext';
 import Sidebar from './components/Layout/Sidebar';
 import Header from './components/Layout/Header';
 import DashboardHome from './components/Dashboard/DashboardHome';
@@ -9,149 +9,197 @@ import LecturerDashboard from './components/Dashboard/LecturerDashboard';
 import CoordinatorDashboard from './components/Dashboard/CoordinatorDashboard';
 import Login from './components/Auth/Login';
 import SignUp from './components/Auth/SignUp';
-import VerifyEmail from './components/Auth/VerifyEmail';
+import ChangePassword from './components/Auth/ChangePassword';
 import ProfilePage from './components/Profile/ProfilePage';
-import CourseCatalogue from './Pages/Courses/CourseCatalogue';
 import AttendanceDashboard from './components/Attendance/AttendanceDashboard';
 import ProjectsList from './components/Projects/ProjectsList';
 import ProjectDetails from './components/Projects/ProjectDetails';
-import TaskList from './components/Tasks/TaskList';
-import GroupList from './components/Groups/GroupList';
 import ContinuousAssessment from './components/Assessment/ContinuousAssessment';
 import ContributionTracking from './components/Assessment/ContributionTracking';
-import ContributionsPage from './components/Contributions/ContributionsPage';
 import AnnouncementList from './components/Announcements/AnnouncementList';
 import AcademicCalendar from './components/Academic/AcademicCalender';
+import AcademicSetup from './components/Academic/AcademicSetup';
+import Timetable from './components/Academic/Timetable';
+import CarryOverPage from './components/Academic/CarryOverPage';
+import NotificationList from './components/Notifications/NotificationList';
+import RosterUpload from './components/Admin/RosterUpload';
+import AuditLogConsole from './components/Admin/AuditLogConsole';
+import RegistrationPage from './Pages/Courses/RegistrationPage';
 import AdminDashboard from './Pages/Admin/AdminDashboard';
-import AdminUsers from './Pages/Admin/AdminUser';
 import MobileSimulator from './components/Mobile/MobileSimulator';
-import { login as apiLogin, register as apiRegister, getCurrentUser, logout as apiLogout } from './api/auth';
-import { setSessionExpiredHandler } from './api/client';
-import { normalizeRole } from './utils/tokenHelpers';
+import MyCourses from './Pages/Lessons/MyCourses';
+import CourseDetail from './Pages/Lessons/CourseDetail';
+import { authApi } from './lib/auth';
+import { normalizeRole } from './lib/profile';
 
-/**
- * Map the backend user (Uppercase role, first/last name) to the display shape
- * Attendî's components consume. The backend role stays the source of truth;
- * `role` is the client-normalized view of it (BR-003).
- */
-function toDisplayUser(backendUser) {
-  const role = normalizeRole(backendUser.role);
-  return {
-    ...backendUser,
-    id: backendUser.id,
-    email: backendUser.email,
-    matricule: backendUser.matricule || '',
-    fullName: `${backendUser.first_name} ${backendUser.last_name}`.trim() || backendUser.username,
-    role,
-  };
-}
+const RequireRole = ({ role, children }) => {
+  let userRole = 'student';
+  try {
+    const stored = localStorage.getItem('fet_user');
+    const user = stored ? JSON.parse(stored) : null;
+    userRole = user?.role || localStorage.getItem('fet_user_role') || 'student';
+  } catch {
+    userRole = localStorage.getItem('fet_user_role') || 'student';
+  }
 
-/**
- * Route guard. C2: authorization is derived from the authenticated user held in
- * React state (populated from GET /accounts/me/ and the login response), NOT
- * from localStorage — anyone can edit localStorage in devtools, so reading a
- * role from there grants nothing but the illusion of access. The backend still
- * enforces every rule; this only stops a student rendering an admin shell.
- */
-const RequireRole = ({ role, user, children }) => {
-  if (!user || user.role !== role) return <Navigate to="/" replace />;
+  if (normalizeRole(userRole) !== normalizeRole(role)) {
+    return <Navigate to="/" replace />;
+  }
   return children;
 };
+
+const ExcludeRole = ({ role, children }) => {
+  let userRole = 'student';
+  try {
+    const stored = localStorage.getItem('fet_user');
+    const user = stored ? JSON.parse(stored) : null;
+    userRole = user?.role || localStorage.getItem('fet_user_role') || 'student';
+  } catch {
+    userRole = localStorage.getItem('fet_user_role') || 'student';
+  }
+
+  if (normalizeRole(userRole) === normalizeRole(role)) {
+    return <Navigate to="/lessons" replace />;
+  }
+  return children;
+};
+
+// BR-003: a roster account carries a temporary password and may do nothing
+// else until it is replaced. The backend rejects everything outside the auth
+// endpoints (403); this mirrors that so the user is redirected rather than
+// shown a screen full of failed requests.
+const RequirePasswordChange = ({ mustChangePassword, children }) => {
+  if (!mustChangePassword) return children;
+  return <Navigate to="/change-password" replace />;
+};
+
+// Everything a fully-provisioned account can reach. Split out of App so the
+// BR-003 password-change redirect can wrap all of it in one place.
+const DashboardRoutes = ({ user }) => (
+  <Routes>
+    <Route path="/" element={<DashboardHome />} />
+    <Route path="/dashboard" element={<DashboardHome />} />
+    <Route path="/student-dashboard" element={<StudentDashboard user={user} />} />
+    <Route path="/lecturer-dashboard" element={<LecturerDashboard user={user} />} />
+    <Route path="/coordinator-dashboard" element={<CoordinatorDashboard user={user} />} />
+    <Route path="/profile" element={<ProfilePage user={user} />} />
+    <Route path="/lessons" element={<MyCourses user={user} />} />
+    <Route path="/lessons/:offeringId" element={<CourseDetail user={user} />} />
+    <Route path="/attendance" element={<AttendanceDashboard user={user} />} />
+    <Route path="/projects" element={<ProjectsList />} />
+    <Route path="/projects/:id" element={<ProjectDetails />} />
+    <Route path="/assessment" element={<ContinuousAssessment user={user} />} />
+    <Route
+      path="/contribution/tracking"
+      element={<RequireRole role="lecturer"><ContributionTracking user={user} /></RequireRole>}
+    />
+    <Route path="/announcements" element={<AnnouncementList user={user} />} />
+    <Route path="/notifications" element={<NotificationList />} />
+    <Route path="/timetable" element={<Timetable />} />
+    <Route path="/carry-over" element={<CarryOverPage user={user} />} />
+    <Route
+      path="/register"
+      element={<RequireRole role="student"><RegistrationPage /></RequireRole>}
+    />
+    <Route path="/academic" element={<AcademicCalendar />} />
+    <Route path="/mobile-simulator" element={<MobileSimulator />} />
+    <Route path="/settings" element={<ProfilePage user={user} />} />
+    <Route
+      path="/admin/dashboard"
+      element={<RequireRole role="admin"><AdminDashboard user={user} /></RequireRole>}
+    />
+    <Route
+      path="/admin/academic"
+      element={<RequireRole role="admin"><AcademicSetup /></RequireRole>}
+    />
+    <Route
+      path="/admin/audit"
+      element={<RequireRole role="admin"><AuditLogConsole /></RequireRole>}
+    />
+    <Route
+      path="/admin/roster"
+      element={<RequireRole role="admin"><RosterUpload /></RequireRole>}
+    />
+    {/* Mock pages removed. Their live equivalents already exist, so
+        old links land somewhere real instead of the catch-all. */}
+    <Route path="/tasks" element={<Navigate to="/projects" replace />} />
+    <Route path="/groups" element={<Navigate to="/projects" replace />} />
+    <Route path="/contribution" element={<Navigate to="/projects" replace />} />
+    <Route path="/courses" element={<Navigate to="/lessons" replace />} />
+    <Route path="/admin/users" element={<Navigate to="/admin/roster" replace />} />
+    <Route path="*" element={<Navigate to="/" />} />
+  </Routes>
+);
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
   const [showSignUp, setShowSignUp] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  // {email, password} held in memory only while the OTP screen is up.
-  const [pendingVerify, setPendingVerify] = useState(null);
 
-  // M2: session expiry is handled in-app. The API client calls this when the
-  // backend reports UNAUTHENTICATED, so we drop to the login screen without a
-  // full page reload (which would discard the in-memory OTP credentials).
   useEffect(() => {
-    setSessionExpiredHandler(() => {
-      setIsAuthenticated(false);
-      setUser(null);
-      setPendingVerify(null);
-    });
-    return () => setSessionExpiredHandler(null);
-  }, []);
-
-  // Restore the session from the backend cookie on mount.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
+    const initAuth = async () => {
       try {
-        const me = await getCurrentUser();
-        if (!cancelled) {
-          setUser(toDisplayUser(me));
-          setIsAuthenticated(true);
-        }
-      } catch {
-        if (!cancelled) {
-          setIsAuthenticated(false);
-          setUser(null);
-        }
-      } finally {
-        if (!cancelled) setIsLoading(false);
+        // Session is validated against the backend using httpOnly cookies.
+        const response = await authApi.me();
+        const userData = response.data?.data ?? response.data;
+        setUser(userData);
+        setIsAuthenticated(true);
+        // Update cached user snapshot
+        localStorage.setItem('fet_auth', 'true');
+        localStorage.setItem('fet_user', JSON.stringify(userData));
+        localStorage.setItem('fet_user_role', userData.role || 'student');
+        localStorage.setItem('fet_user_name', userData.fullName || userData.email?.split('@')[0] || 'User');
+      } catch (error) {
+        // No valid session (or refresh failed) — clear cache, show login.
+        localStorage.removeItem('fet_auth');
+        localStorage.removeItem('fet_user');
+        localStorage.removeItem('fet_user_role');
+        localStorage.removeItem('fet_user_name');
       }
-    })();
-    return () => { cancelled = true; };
+      setIsLoading(false);
+    };
+    initAuth();
   }, []);
 
-  const handleLogin = async (identifier, password) => {
-    try {
-      const backendUser = await apiLogin({ identifier, password });
-      const mapped = toDisplayUser(backendUser);
-      setIsAuthenticated(true);
-      setUser(mapped);
-      return { success: true };
-    } catch (err) {
-      // Verification gate: park credentials in memory and show the OTP screen.
-      if (err.code === 'ACCOUNT_NOT_VERIFIED') {
-        setPendingVerify({ email: identifier, password });
-        return { success: false, code: err.code };
-      }
-      return { success: false, message: err.message || 'Login failed' };
-    }
-  };
+  useEffect(() => {
+    const onProfileUpdate = () => {
+      try {
+        const u = JSON.parse(localStorage.getItem('fet_user') || '{}');
+        if (u && u.fullName) setUser(u);
+      } catch { /* ignore */ }
+    };
+    window.addEventListener('fet-profile-updated', onProfileUpdate);
+    return () => window.removeEventListener('fet-profile-updated', onProfileUpdate);
+  }, []);
 
-  const handleSignUp = async (form) => {
-    try {
-      const nameParts = (form.fullName || '').trim().split(/\s+/);
-      const firstName = nameParts[0] || '';
-      const lastName = nameParts.slice(1).join(' ') || firstName;
-      await apiRegister({
-        email: form.email.toLowerCase(),
-        username: form.email.split('@')[0],
-        first_name: firstName,
-        last_name: lastName,
-        password: form.password,
-      });
-      // Registration never logs in (BR-002 + the email gate).
-      setPendingVerify({ email: form.email.toLowerCase(), password: form.password });
-      return { success: true };
-    } catch (err) {
-      return { success: false, message: err.message || 'Registration failed' };
-    }
-  };
-
-  const handleVerified = async () => {
-    const res = await handleLogin(pendingVerify.email, pendingVerify.password);
-    if (res.success) setPendingVerify(null);
-    return res;
+  const handleLogin = (userData) => {
+    setIsAuthenticated(true);
+    setUser(userData);
+    localStorage.setItem('fet_auth', 'true');
+    localStorage.setItem('fet_user', JSON.stringify(userData));
+    localStorage.setItem('fet_user_role', userData.role || 'student');
+    localStorage.setItem('fet_user_name', userData.fullName || userData.email?.split('@')[0] || 'User');
   };
 
   const handleLogout = async () => {
     try {
-      await apiLogout();
-    } catch {
-      // The session may already be gone; clear client state regardless.
+      await authApi.logout();
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      setIsAuthenticated(false);
+      setUser(null);
+      localStorage.removeItem('fet_auth');
+      localStorage.removeItem('fet_user');
+      localStorage.removeItem('fet_user_role');
+      localStorage.removeItem('fet_user_name');
+      localStorage.removeItem('access_token');
     }
-    setIsAuthenticated(false);
-    setUser(null);
   };
+
+  const handleSwitchToSignUp = () => setShowSignUp(true);
+  const handleSwitchToLogin = () => setShowSignUp(false);
 
   if (isLoading) {
     return (
@@ -167,107 +215,48 @@ function App() {
     );
   }
 
-  if (pendingVerify) {
-    return (
-      <VerifyEmail
-        email={pendingVerify.email}
-        onVerified={handleVerified}
-        onCancel={() => setPendingVerify(null)}
-      />
-    );
-  }
-
   if (!isAuthenticated) {
     if (showSignUp) {
-      return <SignUp onSignUp={handleSignUp} onSwitchToLogin={() => setShowSignUp(false)} />;
+      return <SignUp onSignUp={handleLogin} onSwitchToLogin={handleSwitchToLogin} />;
     }
-    return <Login onLogin={handleLogin} onSwitchToSignUp={() => setShowSignUp(true)} />;
+    return <Login onLogin={handleLogin} onSwitchToSignUp={handleSwitchToSignUp} />;
   }
 
-  const userName = user?.fullName || 'User';
+  const userName = user?.fullName || user?.email?.split('@')[0] || 'User';
   const userRole = user?.role || 'student';
 
-  return (
-    <AppProvider user={user}>
-      <Router>
-        <div className="app-container flex h-screen bg-page-bg">
-          <Sidebar onLogout={handleLogout} userName={userName} userRole={userRole} />
-          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-            <Header user={user} onLogout={handleLogout} />
-            <main className="flex-1 overflow-y-auto p-4 md:p-6">
-              {/*
-                A partial-load failure must be visible, not silently empty (C1).
-                The shell stays usable; the banner explains what is missing.
-              */}
-              <LoadErrorBanner />
-              <Routes>
-                <Route path="/" element={<DashboardHome user={user} />} />
-                <Route path="/dashboard" element={<DashboardHome user={user} />} />
-                <Route path="/student-dashboard" element={<StudentDashboard user={user} />} />
-                <Route path="/lecturer-dashboard" element={<LecturerDashboard user={user} />} />
-                <Route path="/coordinator-dashboard" element={<CoordinatorDashboard user={user} />} />
-                <Route path="/profile" element={<ProfilePage user={user} />} />
-                <Route path="/courses" element={<CourseCatalogue user={user} />} />
-                <Route path="/attendance" element={<AttendanceDashboard user={user} />} />
-                <Route path="/projects" element={<ProjectsList user={user} />} />
-                <Route path="/projects/:id" element={<ProjectDetails user={user} />} />
-                <Route path="/tasks" element={<TaskList user={user} />} />
-                <Route path="/groups" element={<GroupList user={user} />} />
-                <Route path="/assessment" element={<ContinuousAssessment user={user} />} />
-                <Route path="/contribution" element={<ContributionsPage user={user} />} />
-                <Route
-                  path="/contribution/tracking"
-                  element={
-                    <RequireRole role="lecturer" user={user}>
-                      <ContributionTracking user={user} />
-                    </RequireRole>
-                  }
-                />
-                <Route path="/announcements" element={<AnnouncementList user={user} />} />
-                <Route path="/academic" element={<AcademicCalendar />} />
-                <Route path="/mobile-simulator" element={<MobileSimulator />} />
-                <Route
-                  path="/admin/dashboard"
-                  element={
-                    <RequireRole role="admin" user={user}>
-                      <AdminDashboard user={user} />
-                    </RequireRole>
-                  }
-                />
-                <Route
-                  path="/admin/users"
-                  element={
-                    <RequireRole role="admin" user={user}>
-                      <AdminUsers user={user} />
-                    </RequireRole>
-                  }
-                />
-                <Route
-                  path="/admin/attendance"
-                  element={
-                    <RequireRole role="admin" user={user}>
-                      <AttendanceDashboard user={user} />
-                    </RequireRole>
-                  }
-                />
-                <Route path="*" element={<Navigate to="/" />} />
-              </Routes>
-            </main>
-          </div>
-        </div>
-      </Router>
-    </AppProvider>
-  );
-}
+  // BR-003: a roster-created account signs in with a temporary password and
+  // stays locked out of everything else until it is replaced. The flag comes
+  // from /auth/me/, so this is the client's view of a server-enforced rule.
+  const mustChangePassword = Boolean(user?.must_change_password);
 
-/** Renders the AppContext load error so a partial failure is never silent. */
-function LoadErrorBanner() {
-  const { error, loading } = useAppContext();
-  if (loading || !error) return null;
   return (
-    <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
-      <strong>Some data could not be loaded.</strong> {error}
-    </div>
+    <ThemeProvider>
+      <Router>
+          <div className="app-container flex h-screen bg-page-bg">
+            <Sidebar onLogout={handleLogout} userName={userName} userRole={userRole} />
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              <Header user={user} onLogout={handleLogout} />
+              <main className="flex-1 overflow-y-auto p-4 md:p-6">
+                <Routes>
+                  <Route
+                    path="/change-password"
+                    element={<ChangePassword user={user} forced={mustChangePassword} />}
+                  />
+                  <Route
+                    path="*"
+                    element={
+                      <RequirePasswordChange mustChangePassword={mustChangePassword}>
+                        <DashboardRoutes user={user} />
+                      </RequirePasswordChange>
+                    }
+                  />
+                </Routes>
+              </main>
+            </div>
+          </div>
+        </Router>
+    </ThemeProvider>
   );
 }
 

@@ -1,23 +1,41 @@
-import React, { useState } from 'react';
-import { Mail, Lock, Eye, EyeOff, User, UserPlus, ArrowLeft, GraduationCap } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Mail, Lock, Eye, EyeOff, User, UserPlus, ArrowLeft, Building, GraduationCap, BookOpen } from 'lucide-react';
 
 const SignUp = ({ onSignUp, onSwitchToLogin }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [departments, setDepartments] = useState([]);
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
     password: '',
     confirmPassword: '',
     role: 'student',
-    // department / level / matricule are NOT collected here: registration is
-    // unauthenticated (so the departments endpoint 403s) and RegisterSerializer
-    // does not accept them (BR-002). Add them server-side if ever required.
+    department: '',
+    level: '',
+    matricule: '',
   });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
+  useEffect(() => {
+    const loadDepartments = () => {
+      let depts = JSON.parse(localStorage.getItem('fet_departments') || '[]');
+      if (depts.length === 0) {
+        depts = [
+          { id: 1, name: 'Computer Engineering', code: 'CE', coordinator: 'Dr. Alida Vance' },
+          { id: 2, name: 'Civil Engineering', code: 'CVE', coordinator: 'Dr. Michael Brown' },
+          { id: 3, name: 'Chemical & Petroleum Engineering', code: 'CHE', coordinator: 'Dr. Emily Davis' },
+          { id: 4, name: 'Electrical & Electronic Engineering', code: 'EE', coordinator: 'Dr. David Wilson' },
+          { id: 5, name: 'Mechanical & Industrial Engineering', code: 'ME', coordinator: 'Dr. Robert Johnson' },
+        ];
+        localStorage.setItem('fet_departments', JSON.stringify(depts));
+      }
+      setDepartments(depts);
+    };
+    loadDepartments();
+  }, []);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -25,36 +43,59 @@ const SignUp = ({ onSignUp, onSwitchToLogin }) => {
     setError('');
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     setIsLoading(true);
     setError('');
     setSuccess('');
 
-    if (!formData.fullName || !formData.email || !formData.password) {
+    if (!formData.fullName || !formData.email || !formData.password || !formData.department) {
       setError('Please fill in all required fields');
       setIsLoading(false);
       return;
     }
+    if (formData.role === 'student') {
+      if (!formData.matricule) { setError('Matricule number is required for students'); setIsLoading(false); return; }
+      if (!formData.level) { setError('Please select your level'); setIsLoading(false); return; }
+    }
     if (formData.password !== formData.confirmPassword) { setError('Passwords do not match'); setIsLoading(false); return; }
-    if (formData.password.length < 8) { setError('Password must be at least 8 characters'); setIsLoading(false); return; }
+    if (formData.password.length < 6) { setError('Password must be at least 6 characters'); setIsLoading(false); return; }
 
-    // Register server-side (BR-002: the role defaults to STUDENT; the backend
-    // never accepts a client-chosen role). Only the fields RegisterSerializer
-    // actually accepts are sent.
-    const result = await onSignUp({
+    const users = JSON.parse(localStorage.getItem('fet_users') || '[]');
+    if (users.find(u => u.email.toLowerCase() === formData.email.toLowerCase())) {
+      setError('User with this email already exists'); setIsLoading(false); return;
+    }
+    if (formData.role === 'student') {
+      const existingMatricule = users.find(u => u.matricule === formData.matricule.toUpperCase());
+      if (existingMatricule) { setError(`Matricule ${formData.matricule} is already taken.`); setIsLoading(false); return; }
+    }
+
+    const matricule = formData.role === 'student' ? formData.matricule.toUpperCase() : '';
+    const selectedDept = departments.find(d => d.name === formData.department);
+
+    const newUser = {
+      id: Date.now(),
       fullName: formData.fullName,
-      email: formData.email,
+      email: formData.email.toLowerCase(),
       password: formData.password,
       role: formData.role,
-    });
+      department: formData.department,
+      level: formData.role === 'student' ? formData.level : '',
+      matricule: matricule,
+      createdAt: new Date().toISOString(),
+    };
 
-    if (result && result.success) {
-      setSuccess('Account created! Check your email for the verification code.');
-    } else {
-      setError(result?.message || 'Registration failed');
+    users.push(newUser);
+    localStorage.setItem('fet_users', JSON.stringify(users));
+
+    const coordName = selectedDept?.coordinator || 'Not Assigned';
+    setSuccess(`Welcome ${formData.fullName}!`);
+    if (formData.role === 'student') {
+      setSuccess(prev => prev + `\nMatricule: ${matricule} • Level ${formData.level}`);
     }
-    setIsLoading(false);
+    setSuccess(prev => prev + `\nDepartment: ${formData.department} • Coordinator: ${coordName}`);
+
+    setTimeout(() => { setIsLoading(false); onSignUp(newUser); }, 1500);
   };
 
   const inputBase = "fet-input";
@@ -116,7 +157,55 @@ const SignUp = ({ onSignUp, onSwitchToLogin }) => {
             </div>
 
             <div>
-              <label className={labelBase}>Password * (min 8)</label>
+              <label className={labelBase}>Department *</label>
+              <div className="relative">
+                <Building className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
+                <select name="department" value={formData.department} onChange={handleChange}
+                  className={`${inputBase} pl-10`} required>
+                  <option value="">-- Select Department --</option>
+                  {departments.length > 0 ? (
+                    departments.map(dept => (
+                      <option key={dept.id} value={dept.name}>{dept.name} ({dept.code})</option>
+                    ))
+                  ) : (
+                    <option value="" disabled>Loading departments...</option>
+                  )}
+                </select>
+              </div>
+            </div>
+
+            {formData.role === 'student' && (
+              <>
+                <div>
+                  <label className={labelBase}>Matricule Number *</label>
+                  <div className="relative">
+                    <BookOpen className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
+                    <input type="text" name="matricule" value={formData.matricule} onChange={handleChange}
+                      placeholder="e.g., FE24A389" className={`${inputBase} pl-10 uppercase`} required />
+                  </div>
+                  <p className="text-[11px] text-text-secondary mt-1">Your unique student identification number</p>
+                </div>
+                <div>
+                  <label className={labelBase}>Level *</label>
+                  <div className="relative">
+                    <GraduationCap className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
+                    <select name="level" value={formData.level} onChange={handleChange} className={`${inputBase} pl-10`} required>
+                      <option value="">Select Level</option>
+                      <option value="100">100 Level</option>
+                      <option value="200">200 Level</option>
+                      <option value="300">300 Level</option>
+                      <option value="400">400 Level</option>
+                      <option value="500">500 Level</option>
+                      <option value="MSc">MSc</option>
+                      <option value="PhD">PhD</option>
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div>
+              <label className={labelBase}>Password * (min 6)</label>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
                 <input type={showPassword ? 'text' : 'password'} name="password" value={formData.password} onChange={handleChange}

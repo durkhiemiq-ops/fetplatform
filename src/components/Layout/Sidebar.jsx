@@ -1,207 +1,236 @@
-import React, { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
-import { 
-  LayoutDashboard, 
-  Users, 
-  FolderKanban, 
-  ClipboardCheck, 
-  BarChart3, 
-  Bell, 
-  Settings, 
-  LogOut, 
-  CheckSquare,
-  UserCircle,
-  BookOpen,
-  Calendar,
-  Menu,
-  X,
-  Shield,
-  ChevronLeft
+import React, { useState, useEffect } from 'react';
+import { NavLink } from 'react-router-dom';
+import {
+  LayoutDashboard, BookOpen, ClipboardCheck, FolderKanban, Megaphone,
+  UserCircle, Settings, LogOut, Menu, X, BarChart3,
+  CalendarDays, ChevronRight, Bell, BookPlus, CalendarClock, FilePlus2,
+  Upload, Building2, KeyRound, ShieldCheck,
 } from 'lucide-react';
+import { normalizeRole } from '../../lib/profile';
+import { notificationsApi } from '../../lib/notifications';
+import { IconTile } from '../UI';
+
+/* Four areas, one colour each. This is what makes the nav scannable. */
+const WORKSPACE = [
+  { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard', area: 'hub' },
+  { path: '/lessons', icon: BookOpen, label: 'Classrooms', area: 'classrooms' },
+  { path: '/attendance', icon: ClipboardCheck, label: 'Attendance', area: 'attendance' },
+  { path: '/projects', icon: FolderKanban, label: 'Projects', area: 'projects' },
+  { path: '/announcements', icon: Megaphone, label: 'Announcements', area: 'announcements' },
+  { path: '/notifications', icon: Bell, label: 'Notifications', area: 'hub' },
+];
+
+const ACCOUNT = [
+  { path: '/profile', icon: UserCircle, label: 'Profile', area: 'hub' },
+  { path: '/change-password', icon: KeyRound, label: 'Change password', area: 'hub' },
+  { path: '/settings', icon: Settings, label: 'Settings', area: 'hub' },
+];
+
+/* Still fully working screens that simply do not deserve top level billing.
+   They stay reachable here rather than being deleted or redirected away. */
+const MORE = [
+  { path: '/assessment', icon: ClipboardCheck, label: 'Assessment', area: 'classrooms' },
+  { path: '/timetable', icon: CalendarClock, label: 'Timetable', area: 'classrooms' },
+  { path: '/carry-over', icon: FilePlus2, label: 'Carry-over', area: 'classrooms' },
+  { path: '/register', icon: BookPlus, label: 'Register courses', area: 'classrooms', roles: ['student'] },
+  { path: '/academic', icon: CalendarDays, label: 'Academic calendar', area: 'hub' },
+];
+
+/* Admin keeps its own places, but the four core areas stay identical so the
+   product does not change shape depending on who is signed in. */
+const ADMIN_ONLY = [
+  { path: '/admin/dashboard', icon: LayoutDashboard, label: 'Admin dashboard', area: 'hub' },
+  { path: '/admin/roster', icon: Upload, label: 'Roster upload', area: 'hub' },
+  { path: '/admin/audit', icon: ShieldCheck, label: 'Audit log', area: 'hub' },
+  { path: '/admin/academic', icon: Building2, label: 'Academic setup', area: 'hub' },
+];
+
+/** An item with `roles` only shows for those roles; without it, it shows for all. */
+const visibleTo = (items, role) =>
+  items.filter((item) => !item.roles || item.roles.includes(role));
+
 
 const Sidebar = ({ onLogout, userName = 'User', userRole = 'student' }) => {
-  const [isMobileOpen, setIsMobileOpen] = useState(false);
-  const [isCollapsed, setIsCollapsed] = useState(false);
-  const navigate = useNavigate();
-  const initials = userName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  const [open, setOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const role = normalizeRole(userRole);
+  const initials = userName.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
 
-  const getNavItems = () => {
-    const commonItems = [
-      { path: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-      { path: '/profile', icon: UserCircle, label: 'Profile' },
-    ];
+  const moreItems = visibleTo(MORE, role);
 
-    const studentItems = [
-      { type: 'label', text: 'Academics' },
-      { path: '/courses', icon: BookOpen, label: 'Courses' },
-      { path: '/attendance', icon: Calendar, label: 'Attendance' },
-      { path: '/projects', icon: FolderKanban, label: 'Projects' },
-      { path: '/tasks', icon: CheckSquare, label: 'Tasks' },
-      { path: '/groups', icon: Users, label: 'Groups' },
-      { type: 'label', text: 'Evaluation' },
-      { path: '/assessment', icon: ClipboardCheck, label: 'Assessment' },
-      { path: '/contribution', icon: BarChart3, label: 'Contributions' },
-      { type: 'label', text: 'Info' },
-      { path: '/announcements', icon: Bell, label: 'Announcements' },
-      { path: '/academic', icon: Calendar, label: 'Academic Calendar' },
-    ];
+  // Real unread count, so the badge means something. The backend raises these
+  // on its own (attendance checkpoints, marks), so this is not a client cache.
+  const [unread, setUnread] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const list = await notificationsApi.list(true);
+        if (!cancelled) setUnread((list || []).length);
+      } catch {
+        /* a missing badge must never break the nav */
+      }
+    };
+    load();
+    const onRead = () => load();
+    window.addEventListener('fet-notifications-changed', onRead);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('fet-notifications-changed', onRead);
+    };
+  }, []);
 
-    const lecturerItems = [
-      { type: 'label', text: 'Academics' },
-      { path: '/courses', icon: BookOpen, label: 'My Courses' },
-      { path: '/attendance', icon: Calendar, label: 'Attendance' },
-      { path: '/projects', icon: FolderKanban, label: 'Projects' },
-      { path: '/tasks', icon: CheckSquare, label: 'Tasks' },
-      { path: '/groups', icon: Users, label: 'Groups' },
-      { type: 'label', text: 'Evaluation' },
-      { path: '/assessment', icon: ClipboardCheck, label: 'Assessment' },
-      { path: '/contribution', icon: BarChart3, label: 'Contributions' },
-      { path: '/contribution/tracking', icon: BarChart3, label: 'Contribution Tracking' },
-      { type: 'label', text: 'Info' },
-      { path: '/announcements', icon: Bell, label: 'Announcements' },
-      { path: '/academic', icon: Calendar, label: 'Academic Calendar' },
-    ];
+  useEffect(() => {
+    document.body.style.overflow = open ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [open]);
 
-    const adminItems = [
-      { type: 'label', text: 'Administration' },
-      { path: '/admin/dashboard', icon: Shield, label: 'Admin Dashboard' },
-      { path: '/admin/users', icon: Users, label: 'User Management' },
-      { type: 'label', text: 'Academics' },
-      { path: '/courses', icon: BookOpen, label: 'Course Catalogue' },
-      { path: '/attendance', icon: Calendar, label: 'Attendance' },
-      { path: '/academic', icon: Calendar, label: 'Academic Calendar' },
-    ];
-
-    if (userRole === 'admin') {
-      return [...commonItems, ...adminItems];
-    } else if (userRole === 'lecturer') {
-      return [...commonItems, ...lecturerItems];
-    } else {
-      return [...commonItems, ...studentItems];
-    }
-  };
-
-  const navItems = getNavItems();
-
-  const toggleSidebar = () => setIsMobileOpen(!isMobileOpen);
-  const closeSidebar = () => setIsMobileOpen(false);
-
-  const roleColor = userRole === 'admin' ? '#DC2626' : userRole === 'lecturer' ? '#3F35B5' : '#2563EB';
-  const roleBg = userRole === 'admin' ? 'rgba(220,38,38,0.15)' : userRole === 'lecturer' ? 'rgba(63,53,181,0.15)' : 'rgba(37,99,235,0.15)';
-
-  const SidebarContent = () => (
-    <div className="flex flex-col h-full">
-      {/* Logo */}
-      <div className="px-5 pt-5 pb-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ backgroundColor: '#3F35B5' }}>
-            <span className="text-white font-bold text-base tracking-tight">FET</span>
-          </div>
-          <div>
-            <h1 className="text-[15px] font-bold text-white leading-tight">FET Platform</h1>
-            <p className="text-[11px] text-white/35 font-medium">Engineering Management</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Divider */}
-      <div className="mx-4 h-px bg-white/8"></div>
-
-      {/* User Info */}
-      <div className="px-4 py-4">
-        <div className="flex items-center gap-3 px-2 py-2.5 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.06)' }}>
-          <div className="w-9 h-9 rounded-lg flex items-center justify-center font-bold text-white text-sm" style={{ backgroundColor: roleColor }}>
-            {initials || 'U'}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-semibold text-white truncate">{userName}</p>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: roleColor }}></span>
-              <p className="text-[11px] capitalize font-medium" style={{ color: 'rgba(255,255,255,0.45)' }}>{userRole}</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Navigation */}
-      <nav className="flex-1 px-3 overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
-        {navItems.map((item, index) => {
-          if (item.type === 'label') {
-            return (
-              <div key={`label-${index}`} className="nav-section-label">
-                {item.text}
-              </div>
-            );
-          }
-          return (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              onClick={closeSidebar}
-              className={({ isActive }) =>
-                `nav-item ${isActive ? 'active' : ''}`
-              }
-            >
-              <item.icon size={18} strokeWidth={2} />
-              <span>{item.label}</span>
-            </NavLink>
-          );
-        })}
-      </nav>
-
-      {/* Bottom Actions */}
-      <div className="px-3 pb-4 mt-auto">
-        <div className="h-px bg-white/8 mb-3 mx-1"></div>
-        <button 
-          onClick={() => { closeSidebar(); navigate('/profile'); }}
-          className="nav-item w-full"
-        >
-          <Settings size={18} strokeWidth={2} />
-          <span>Settings</span>
-        </button>
-        <button 
-          onClick={() => { onLogout(); closeSidebar(); }}
-          className="nav-item w-full"
-          style={{ color: 'rgba(252,165,165,0.7)' }}
-        >
-          <LogOut size={18} strokeWidth={2} />
-          <span>Logout</span>
-        </button>
-      </div>
-    </div>
-  );
+  const close = () => setOpen(false);
 
   return (
     <>
-      {/* Mobile Hamburger */}
       <button
-        onClick={toggleSidebar}
-        className="lg:hidden fixed top-3 left-3 z-[60] p-2 bg-[#0F0B3D] text-white rounded-lg shadow-lg"
-        aria-label="Toggle navigation"
+        type="button"
+        onClick={() => setOpen(true)}
+        className="fet-mobile-only fixed left-4 top-3 z-[70] grid h-10 w-10 place-items-center rounded-md border border-border-default bg-surface shadow-card"
+        aria-label="Open navigation"
       >
-        {isMobileOpen ? <X size={22} /> : <Menu size={22} />}
+        <Menu size={19} className="text-text-secondary" />
       </button>
 
-      {/* Mobile Overlay */}
-      {isMobileOpen && (
-        <div 
-          className="lg:hidden fixed inset-0 bg-black/50 z-40 backdrop-blur-sm"
-          onClick={closeSidebar}
+      {open && (
+        <div
+          className="fet-mobile-only fixed inset-0 z-[65] bg-black/50 backdrop-blur-[1px]"
+          onClick={close}
+          aria-hidden="true"
         />
       )}
 
-      {/* Sidebar */}
-      <aside className={`
-        sidebar text-white flex flex-col fixed lg:relative z-50
-        transition-transform duration-200 ease-out
-        ${isMobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-        h-full
-        ${isCollapsed ? 'w-[72px]' : 'w-64'}
-      `}>
-        <SidebarContent />
+      <aside
+        className={[
+          'sidebar text-white flex flex-col fixed lg:sticky top-0 h-screen z-[68]',
+          'w-[258px] shrink-0 transition-transform duration-200',
+          open ? 'translate-x-0 shadow-modal' : '-translate-x-full lg:translate-x-0',
+        ].join(' ')}
+      >
+        <div className="flex flex-col h-full">
+          <div className="flex items-center gap-[11px] px-[18px] pt-[18px] pb-4">
+            <div className="grid h-[34px] w-[34px] place-items-center rounded-[9px] bg-primary text-[11.5px] font-bold tracking-[.04em]">
+              FET
+            </div>
+            <div className="min-w-0">
+              <div className="text-[14.5px] font-semibold leading-tight tracking-[-.01em]">FET Platform</div>
+              <div className="text-[10.5px] text-white/40 leading-tight">Engineering Management</div>
+            </div>
+            <button
+              type="button"
+              onClick={close}
+              className="fet-mobile-only ml-auto grid h-9 w-9 place-items-center rounded-md text-white/60 hover:bg-white/10"
+              aria-label="Close navigation"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="mx-3 mb-3 flex items-center gap-2.5 rounded-md border border-white/5 bg-white/5 px-2.5 py-2.5">
+            <div className="grid h-[31px] w-[31px] shrink-0 place-items-center rounded-full border border-white/10 bg-white/10 text-[11px] font-semibold">
+              {initials || 'U'}
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-[12.5px] font-medium text-white">{userName}</div>
+              <div className="text-[10.5px] capitalize text-white/40">{role}</div>
+            </div>
+          </div>
+
+          <nav className="flex-1 overflow-y-auto px-[11px] pb-2" style={{ scrollbarWidth: 'thin' }}>
+            <div className="nav-section-label">Workspace</div>
+            {WORKSPACE.map((item) => (
+              <NavItem
+                key={item.path}
+                item={item}
+                onNavigate={close}
+                badge={item.path === '/notifications' ? unread : 0}
+              />
+            ))}
+
+            {role === 'admin' ? (
+              <>
+                <div className="nav-section-label">Administration</div>
+                {ADMIN_ONLY.map((item) => (
+                  <NavItem key={item.path} item={item} onNavigate={close} />
+                ))}
+              </>
+            ) : null}
+
+            <div className="nav-section-label">Account</div>
+            {ACCOUNT.map((item) => (
+              <NavItem key={item.path} item={item} onNavigate={close} />
+            ))}
+
+            <div className="nav-section-label">More</div>
+            <button
+              type="button"
+              onClick={() => setMoreOpen((v) => !v)}
+              className="nav-item w-full"
+              aria-expanded={moreOpen}
+            >
+              <span className="nav-tile"><ChevronRight size={14} className="text-white/60" /></span>
+              <span>Other screens</span>
+              <span className="ml-auto text-[11px] text-white/40 num">{moreItems.length}</span>
+            </button>
+            {moreOpen ? moreItems.map((item) => (
+              <NavItem key={item.path} item={item} onNavigate={close} />
+            )) : null}
+
+            {role === 'lecturer' ? (
+              <NavItem
+                item={{ path: '/contribution/tracking', icon: BarChart3, label: 'Contribution tracking', area: 'projects' }}
+                onNavigate={close}
+              />
+            ) : null}
+          </nav>
+
+          <div className="mt-auto px-[11px] pb-3 pt-2.5 border-t border-white/[.06]">
+            <button
+              type="button"
+              onClick={() => { close(); onLogout(); }}
+              className="nav-item w-full"
+              style={{ color: 'rgba(233,144,138,.78)' }}
+            >
+              <span className="nav-tile"><LogOut size={14} className="text-white/60" /></span>
+              <span>Sign out</span>
+            </button>
+          </div>
+        </div>
       </aside>
     </>
   );
+};
+
+const NavItem = ({ item, onNavigate, badge = 0 }) => (
+  <NavLink
+    to={item.path}
+    onClick={onNavigate}
+    className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+  >
+    <span className="nav-tile">
+      <item.icon size={14} style={{ color: AREA_ICON[item.area] || '#A7B2C4' }} />
+    </span>
+    <span>{item.label}</span>
+    {badge > 0 ? (
+      <span className="ml-auto grid h-[18px] min-w-[18px] place-items-center rounded-full bg-danger px-[5px] text-[10px] font-semibold text-white">
+        {badge > 99 ? '99+' : badge}
+      </span>
+    ) : null}
+  </NavLink>
+);
+
+const AREA_ICON = {
+  cls: '#8FB4E8',
+  att: '#6FC4A0',
+  prj: '#E0B368',
+  ann: '#DB94B0',
+  hub: '#A7B2C4',
 };
 
 export default Sidebar;

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { authApi } from '../../lib/auth';
 import { Eye, EyeOff, ArrowRight, GraduationCap, Shield, BookOpen } from 'lucide-react';
 
 const Login = ({ onLogin, onSwitchToSignUp }) => {
@@ -22,16 +23,30 @@ const Login = ({ onLogin, onSwitchToSignUp }) => {
       return;
     }
 
-    // Authentication is entirely server-side: the backend resolves the
-    // identifier (email / matricule / staffid) and decides VERIFY/CREDENTIALS.
-    const result = await onLogin(id, password);
-    if (!result || result.success !== true) {
-      if (result?.code === 'ACCOUNT_NOT_VERIFIED') {
-        // App shows the verification screen; nothing else to do here.
-        return;
-      }
-      setError(result?.message || 'Login failed. Please try again.');
+    try {
+      // Determine if identifier is email or matricule
+      const payload = id.includes('@') ? { email: id, password } : { matricule: id, password };
+      const response = await authApi.login(payload);
+      // Tokens are set as httpOnly cookies by the backend — JS never sees them.
+      const user = response.data?.data ?? response.data;
+
+      // User snapshot only (cached for display; re-validated via /me on load).
+      localStorage.setItem('fet_auth', 'true');
+      localStorage.setItem('fet_user', JSON.stringify(user));
+      localStorage.setItem('fet_user_role', user.role || 'student');
+      localStorage.setItem('fet_user_name', user.fullName || user.email?.split('@')[0] || 'User');
+
       setIsLoading(false);
+      onLogin(user);
+    } catch (err) {
+      setIsLoading(false);
+      if (err.response?.data?.error?.message) {
+        setError(err.response.data.error.message);
+      } else if (err.response?.data?.message) {
+        setError(err.response.data.message);
+      } else {
+        setError('Invalid credentials. Please check and try again.');
+      }
     }
   };
 
@@ -136,7 +151,7 @@ const Login = ({ onLogin, onSwitchToSignUp }) => {
           </form>
 
           <p className="text-center mt-6 text-[13px] text-text-secondary">
-            Don't have an account?{' '}
+            Don&apos;t have an account?{' '}
             <button onClick={onSwitchToSignUp} className="text-primary font-semibold hover:opacity-80 transition-opacity">Register</button>
           </p>
 

@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FET Platform — Engineering Review &amp; New Feature</title>
+<style>
+  :root{
+    --ink:#12121a; --ink2:#4a4a5c; --ink3:#7b7b90;
+    --bg:#f7f7fb; --surface:#ffffff; --line:#e3e3ec;
+    --primary:#3F35B5; --primary700:#2E2786; --primarybg:#eeedfb;
+    --ok:#0f7b52; --okbg:#e6f6ee; --warn:#8a5a00; --warnbg:#fdf3e0;
+    --bd:#b3261e; --bdbg:#fdecea;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #deck{width:100%; height:100%; display:flex; align-items:center; justify-content:center; padding:24px}
+  .slide{
+    display:none; width:min(1180px, 100%); max-height:100%;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+    padding:44px 52px; overflow:auto; box-shadow:0 10px 40px rgba(18,18,26,.07);
+  }
+  .slide.active{display:block}
+  h1{font-size:40px;line-height:1.15;margin:0 0 12px;letter-spacing:-.02em}
+  h2{font-size:30px;margin:0 0 6px;letter-spacing:-.015em}
+  h3{font-size:15px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink3)}
+  p{line-height:1.6;color:var(--ink2);margin:0 0 12px}
+  .lede{font-size:18px;color:var(--ink2);max-width:70ch}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--primary);font-weight:700;margin-bottom:10px}
+  .sub{color:var(--ink3);font-size:14px;margin-bottom:24px}
+  .rule{height:1px;background:var(--line);margin:22px 0}
+
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+
+  .card{border:1px solid var(--line);border-radius:12px;padding:16px 18px;background:var(--surface)}
+  .card.soft{background:#fbfbfe}
+  .card.ok{background:var(--okbg);border-color:#bfe6d3}
+  .card.warn{background:var(--warnbg);border-color:#f0dcb4}
+  .card.bad{background:var(--bdbg);border-color:#f3c9c5}
+  .card h4{margin:0 0 6px;font-size:15px}
+  .card p{margin:0;font-size:13.5px}
+
+  .stat{text-align:left}
+  .stat .n{font-size:34px;font-weight:800;letter-spacing:-.02em;line-height:1}
+  .stat .l{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink3);margin-top:6px}
+
+  .pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid}
+  .p-ok{background:var(--okbg);color:var(--ok);border-color:#bfe6d3}
+  .p-wa{background:var(--warnbg);color:var(--warn);border-color:#f0dcb4}
+  .p-bd{background:var(--bdbg);color:var(--bd);border-color:#f3c9c5}
+  .p-in{background:var(--primarybg);color:var(--primary700);border-color:#d5d2f5}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+  th{text-align:left;text-transform:uppercase;font-size:11px;letter-spacing:.07em;color:var(--ink3);
+     border-bottom:1px solid var(--line);padding:8px 10px}
+  td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top;color:var(--ink2)}
+  td strong{color:var(--ink)}
+  code{font-family:"IBM Plex Mono",ui-monospace,Consolas,monospace;font-size:12.5px;
+       background:#f1f1f7;padding:2px 6px;border-radius:5px;color:var(--primary700)}
+
+  ul{margin:0 0 12px;padding-left:20px}
+  li{line-height:1.65;color:var(--ink2);margin-bottom:5px}
+
+  .flow{display:flex;align-items:stretch;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .step{flex:1;min-width:120px;border:1px solid var(--line);border-radius:10px;padding:12px;background:#fbfbfe}
+  .step b{display:block;font-size:13px;margin-bottom:3px}
+  .step span{font-size:12px;color:var(--ink3)}
+  .arrow{align-self:center;color:var(--ink3);font-weight:700}
+
+  .kicker{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .kicker div{border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:12.5px;color:var(--ink2);background:#fbfbfe}
+
+  footer{position:fixed;bottom:14px;left:0;right:0;display:flex;justify-content:center;gap:10px;align-items:center;
+         font-size:12px;color:var(--ink3)}
+  button.nav{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:5px 12px;
+             cursor:pointer;font-size:13px;color:var(--ink2)}
+  button.nav:hover{background:#f1f1f7}
+  .count{font-variant-numeric:tabular-nums}
+  .title-slide{text-align:center;padding:70px 52px}
+  .title-slide .badge{display:inline-block;background:var(--primarybg);color:var(--primary700);
+    border:1px solid #d5d2f5;border-radius:999px;padding:6px 16px;font-size:12.5px;font-weight:700;
+    letter-spacing:.08em;text-transform:uppercase;margin-bottom:22px}
+</style>
+</head>
+<body>
+<div id="deck">
+
+<!-- 1 ── TITLE -->
+<section class="slide title-slide active">
+  <div class="badge">Engineering Review &amp; Feature Release</div>
+  <h1>FET Platform</h1>
+  <p class="lede" style="margin:0 auto 26px">
+    Academic learning and project management for the Faculty of Engineering
+    and Technology — Django REST Framework + React.
+  </p>
+  <div class="grid g4" style="max-width:900px;margin:0 auto">
+    <div class="card stat"><div class="n">119</div><div class="l">API routes</div></div>
+    <div class="card stat"><div class="n">349</div><div class="l">Tests passing</div></div>
+    <div class="card stat"><div class="n">95</div><div class="l">FR + BR rules tracked</div></div>
+    <div class="card stat"><div class="n">23</div><div class="l">New tests added</div></div>
+  </div>
+  <p class="sub" style="margin:28px auto 0;max-width:62ch">
+    Original system created by <strong>Ngong Song Dilan</strong> and the FET platform team.
+    This session: a full audit against the nine specification documents, one
+    security defect found and closed, and one new capability shipped.
+  </p>
+</section>
+
+<!-- 2 ── AGENDA -->
+<section class="slide">
+  <div class="eyebrow">Agenda</div>
+  <h2>What we are covering</h2>
+  <p class="sub">Roughly 15 minutes, then questions.</p>
+  <div class="grid g2">
+    <div class="card soft"><h4>1 · Where the system stands</h4>
+      <p>The stack, how it runs locally, and what is genuinely working today.</p></div>
+    <div class="card soft"><h4>2 · Measuring against the specs</h4>
+      <p>Nine documents, 34 functional requirements, 61 business rules. What we
+         could verify automatically, and what we could not.</p></div>
+    <div class="card bad"><h4>3 · A real security defect</h4>
+      <p>Forced password change was documented but never enforced server-side.
+         Found, fixed, and proven with tests.</p></div>
+    <div class="card ok"><h4>4 · New: Security &amp; Audit Console</h4>
+      <p>The platform wrote audit records nobody could read. Now there is an
+         admin surface, backed by a spec requirement that was unimplemented.</p></div>
+    <div class="card soft" style="grid-column:1/-1"><h4>5 · Known gaps and what we recommend next</h4>
+      <p>Honest list, prioritised, with owners suggested.</p></div>
+  </div>
+</section>
+
+<!-- 3 ── THE SYSTEM -->
+<section class="slide">
+  <div class="eyebrow">The system</div>
+  <h2>What FET Platform does</h2>
+  <p class="sub">The academic model the whole product hangs on.</p>
+  <div class="flow">
+    <div class="step"><b>Student</b><span>enrols in a course</span></div><div class="arrow">→</div>
+    <div class="step"><b>Course offering</b><span>a course in a semester</span></div><div class="arrow">→</div>
+    <div class="step"><b>Class + sessions</b><span>lecture / practical / lab</span></div><div class="arrow">→</div>
+    <div class="step"><b>Attendance</b><span>rotating QR checkpoints</span></div>
+  </div>
+  <div class="rule"></div>
+  <div class="grid g3">
+    <div class="card soft"><h4>Automatic eligibility</h4>
+      <p>Enrol once in the course; every class under that offering becomes
+         eligible automatically. No per-class enrolment.</p></div>
+    <div class="card soft"><h4>QR attendance that expires</h4>
+      <p>Tokens live ~10s in Redis. Screenshots and reuse stop working the
+         moment the window closes.</p></div>
+    <div class="card soft"><h4>Projects end to end</h4>
+      <p>Groups, group leaders, tasks, milestones, contributions, assessment
+         components, and a read-only archive.</p></div>
+  </div>
+  <div class="kicker">
+    <div>JWT in httpOnly cookies</div><div>Six roles</div>
+    <div>Roster-based onboarding</div><div>Scoped announcements</div>
+    <div>Carry-over applications</div><div>Role-based dashboards</div>
+  </div>
+</section>
+
+<!-- 4 ── HOW IT RUNS -->
+<section class="slide">
+  <div class="eyebrow">Infrastructure</div>
+  <h2>How it runs right now</h2>
+  <p class="sub">Three processes, all verified up before this session.</p>
+  <table>
+    <tr><th style="width:26%">Service</th><th style="width:34%">Where</th><th>Status</th></tr>
+    <tr><td><strong>Frontend</strong><br><span style="color:var(--ink3)">Vite 4 + React 18</span></td>
+        <td><code>localhost:3000</code></td>
+        <td><span class="pill p-ok">200 OK</span> proxies <code>/api</code> → 8000</td></tr>
+    <tr><td><strong>Backend</strong><br><span style="color:var(--ink3)">Django 5.2 + DRF</span></td>
+        <td><code>127.0.0.1:8000</code></td>
+        <td><span class="pill p-ok">200 OK</span> 119 routes, envelope + pagination</td></tr>
+    <tr><td><strong>Cache</strong><br><span style="color:var(--ink3)">Redis 7 (Docker)</span></td>
+        <td><code>fetplatform-redis</code> :6379</td>
+        <td><span class="pill p-ok">PONG</span> holds live rate-limit + QR keys</td></tr>
+    <tr><td><strong>Database</strong><br><span style="color:var(--ink3)">SQLite (local dev)</span></td>
+        <td><code>backend/db.sqlite3</code></td>
+        <td><span class="pill p-wa">Dev only</span> Postgres configured, not provisioned</td></tr>
+  </table>
+  <div class="rule"></div>
+  <div class="grid g2">
+    <div class="card"><h4>Redis is genuinely load-bearing</h4>
+      <p>Not just configured — real traffic writes keys. The DRF rate limiter
+         persists <code>:1:throttle_anon_127.0.0.1</code> into the container, and
+         attendance QR tokens are stored there with a TTL.</p></div>
+    <div class="card warn"><h4>One environment caveat</h4>
+      <p>Open the app at <code>localhost:3000</code>. Cookies are host-only with
+         <code>SameSite=Lax</code>, so opening it via <code>127.0.0.1</code> or a LAN IP
+         breaks authentication even though the page loads.</p></div>
+  </div>
+</section>
+
+<!-- 5 ── MEASUREMENT -->
+<section class="slide">
+  <div class="eyebrow">Method</div>
+  <h2>How we measured it</h2>
+  <p class="sub">We did not review by eye. We extracted the rules, then tested them.</p>
+  <div class="grid g3">
+    <div class="card stat"><div class="n">9</div><div class="l">Specification docs</div></div>
+    <div class="card stat"><div class="n">34</div><div class="l">Functional reqs</div></div>
+    <div class="card stat"><div class="n">61</div><div class="l">Business rules</div></div>
+  </div>
+  <div class="rule"></div>
+  <div class="grid g2">
+    <div class="card"><h4>What that gives you</h4>
+      <ul>
+        <li>Every requirement carries an ID, so gaps are arguable, not opinion-based.</li>
+        <li>Each numbered rule maps to a test that either passes or fails.</li>
+        <li>Coverage is measurable and re-runnable on every commit.</li>
+      </ul></div>
+    <div class="card warn"><h4>What it does not give you</h4>
+      <ul>
+        <li>Several documents contain unnumbered normative rules — they can't be tracked automatically.</li>
+        <li>The announcement lifecycle is promised in one document and never defined in the other.</li>
+        <li>Some values (max file size, grade scale, retention) are explicitly deferred to the institution.</li>
+      </ul></div>
+  </div>
+</section>
+
+<!-- 6 ── WHAT WORKS -->
+<section class="slide">
+  <div class="eyebrow">Status</div>
+  <h2>What is working</h2>
+  <p class="sub">Verified by execution, not inspection.</p>
+  <div class="grid g2">
+    <div class="card ok"><h4><span class="pill p-ok">Passing</span> 349 automated tests</h4>
+      <p>18 test files across auth, academics, attendance, projects, assessments,
+         announcements, roster/carry-over, class scales, stations and points.</p></div>
+    <div class="card ok"><h4><span class="pill p-ok">Passing</span> Consistent API contract</h4>
+      <p>Every success is <code>{success, data}</code>, every error is
+         <code>{success:false, error:{code,message}}</code>, with a single
+         pagination shape across 119 routes.</p></div>
+    <div class="card ok"><h4><span class="pill p-ok">Passing</span> Role-based access</h4>
+      <p>Six roles enforced in the backend. Every view declares its own
+         permissions; a student requesting admin statistics gets 403.</p></div>
+    <div class="card ok"><h4><span class="pill p-ok">Passing</span> Attendance lifecycle</h4>
+      <p>Start session → select checkpoints → issue rotating tokens → scan →
+         correct. Duplicate attendance is prevented at both the application and
+         database level.</p></div>
+    <div class="card ok" style="grid-column:1/-1"><h4><span class="pill p-ok">Passing</span> Frontend builds clean</h4>
+      <p>52 components, production bundle compiles without errors. Role-gated
+         routes, responsive layout, and a working Vite proxy.</p></div>
+  </div>
+</section>
+
+<!-- 7 ── THE DEFECT -->
+<section class="slide">
+  <div class="eyebrow">Security finding</div>
+  <h2>The forced password change was never enforced</h2>
+  <p class="sub">Documented in three places. Implemented in none of them.</p>
+  <div class="grid g2">
+    <div class="card"><h4>What the documentation promised</h4>
+      <ul>
+        <li>README: <em>"roster accounts are locked out until they replace the
+            temporary password"</em></li>
+        <li>Business rule <strong>BR-003</strong>: a user must never gain
+            permissions by modifying a frontend request — authorization is
+            enforced by the backend.</li>
+        <li>Business rule <strong>BR-002</strong>: role and access changes
+            require an authorised administrator.</li>
+      </ul></div>
+    <div class="card bad"><h4>What the code actually did</h4>
+      <ul>
+        <li><code>must_change_password</code> was <em>written</em> at roster upload
+            and <em>cleared</em> at password change.</li>
+        <li>It was <strong>read</strong> by one serializer and <strong>never checked</strong>
+            anywhere else — no permission class, no middleware, no view guard.</li>
+        <li>The only protection was a client-side redirect in React, which any
+            user can skip by navigating directly.</li>
+      </ul></div>
+  </div>
+  <div class="rule"></div>
+  <div class="card warn"><h4>Why it mattered</h4>
+    <p>A student provisioned from a departmental roster signs in with a temporary
+       password. Before this fix, that account could read announcements, browse
+       projects and pull its own attendance while the password was still
+       known to whoever handed it over. The lockout was cosmetic.</p></div>
+</section>
+
+<!-- 8 ── THE FIX -->
+<section class="slide">
+  <div class="eyebrow">Remediation</div>
+  <h2>Enforcement moved to the only place that cannot be bypassed</h2>
+  <p class="sub">The design decision that mattered.</p>
+  <div class="grid g2">
+    <div class="card bad"><h4>Rejected: a permission class</h4>
+      <p>Adding a check to <code>DEFAULT_PERMISSION_CLASSES</code> looks right and
+         does almost nothing — <strong>over 100 views declare their own
+         <code>permission_classes</code></strong>, which silently override the
+         default. The check would be skipped nearly everywhere.</p></div>
+    <div class="card ok"><h4>Adopted: the authentication layer</h4>
+      <p>Every authenticated request passes through the JWT authenticator. The
+         rule lives there, so <em>no view can opt out of it</em>, and a student
+         cannot escape it by swapping to a Bearer header.</p></div>
+  </div>
+  <div class="rule"></div>
+  <div class="flow">
+    <div class="step"><b>Login</b><span>succeeds as normal</span></div><div class="arrow">→</div>
+    <div class="step"><b>must_change_password set</b><span>carried on the user</span></div><div class="arrow">→</div>
+    <div class="step"><b>Only /api/v1/auth/* reachable</b><span>change-password, me, logout, refresh</span></div><div class="arrow">→</div>
+    <div class="step"><b>Everything else 403</b><span>correct error envelope</span></div>
+  </div>
+  <p class="sub" style="margin-top:18px">
+    Proved live against a real account holding a temporary password:
+    <code>/auth/me/</code> → <span class="pill p-ok">200</span>,
+    <code>/dashboard/</code>, <code>/projects/</code>, <code>/announcements/</code>,
+    <code>/students/me/courses/</code>, <code>/notifications/</code> →
+    <span class="pill p-bd">403</span> each.
+  </p>
+</section>
+
+<!-- 9 ── ALSO FIXED -->
+<section class="slide">
+  <div class="eyebrow">Remediation</div>
+  <h2>Two smaller defects, same review</h2>
+  <div class="grid g2">
+    <div class="card warn"><h4>Contradictory validation message</h4>
+      <p>Level validation accepted <code>200</code>/<code>300</code>/<code>400</code>/<code>500</code>
+         but its error message advertised <code>L200</code>, <code>L300</code>… So a
+         user who followed the instructions exactly was rejected for doing so.
+         The bug existed in <strong>two</strong> serializers.</p>
+      <p style="margin-top:8px"><span class="pill p-ok">Fixed</span> one shared
+         <code>VALID_LEVELS</code> constant now drives both the check and the message,
+         so they cannot drift apart again.</p></div>
+    <div class="card warn"><h4>Dead authorisation constant</h4>
+      <p><code>STUDENT_REGISTRATION_DOMAINS</code> declared the rule that students
+         register on a <code>@ubuea.cm</code> address — and was referenced
+         <strong>nowhere</strong>. The rule it documented was never enforced.</p>
+      <p style="margin-top:8px"><span class="pill p-wa">Left as-is, deliberately</span>
+         Wiring it in would contradict a passing test that explicitly allows
+         lecturer self-registration with any address. That is a product decision,
+         not a bug fix — see the gaps slide.</p></div>
+  </div>
+  <div class="rule"></div>
+  <div class="card"><h4>Regression safety</h4>
+    <p>All 326 pre-existing tests still pass after the changes. We added 23 new
+       tests across two files and finished at <strong>349 passing, 0 failing</strong>.</p></div>
+</section>
+
+<!-- 10 ── NEW FEATURE -->
+<section class="slide">
+  <div class="eyebrow">New capability</div>
+  <h2>Security &amp; Audit Console</h2>
+  <p class="sub">Filling a gap the specifications explicitly name.</p>
+  <div class="grid g2">
+    <div class="card"><h4>The gap</h4>
+      <p>Audit records were already being written from across the platform —
+         sign-ins, sign-outs, account creation, announcement pins, role changes.
+         <strong>Nothing could read them back.</strong></p>
+      <p style="margin-top:8px">The API specification declares three administrator
+         roles and contains <strong>zero</strong> admin endpoints. The role matrix
+         nevertheless grants "Access audit logs" to System Administrators.</p></div>
+    <div class="card ok"><h4>What we shipped</h4>
+      <ul>
+        <li><code>GET /api/v1/audit/logs/</code> — paginated, filterable trail</li>
+        <li><code>GET /api/v1/audit/summary/</code> — 24h headline numbers</li>
+        <li>An admin console page, reachable at <code>/admin/audit</code></li>
+        <li>15 tests covering access control, read-only guarantees and filters</li>
+      </ul></div>
+  </div>
+  <div class="rule"></div>
+  <div class="grid g3">
+    <div class="card soft"><h4>Admin only</h4>
+      <p>A student requesting the log gets <code>403</code>. Verified live, and
+         pinned by tests.</p></div>
+    <div class="card soft"><h4>Read-only by construction</h4>
+      <p>No mutation endpoints exist. <code>DELETE</code> returns
+         <code>405</code>. The absence <em>is</em> the control, per BR-211.</p></div>
+    <div class="card soft"><h4>Filters can't become an attack</h4>
+      <p>Filters are whitelisted, not passed through. A SQL-injection string in
+         any parameter is ignored rather than executed.</p></div>
+  </div>
+</section>
+
+<!-- 11 ── DEMO -->
+<section class="slide">
+  <div class="eyebrow">Live demonstration</div>
+  <h2>What to watch</h2>
+  <p class="sub">Sign in as <code>admin@fet.edu</code> / <code>admin123</code> at <code>localhost:3000</code></p>
+  <table>
+    <tr><th style="width:8%">#</th><th style="width:38%">Action</th><th>What it proves</th></tr>
+    <tr><td>1</td><td>Open <strong>Audit log</strong> in the admin sidebar</td>
+        <td>Live trail with actor, action, resource and originating IP — populated from real activity in this session</td></tr>
+    <tr><td>2</td><td>Filter by action; page through results</td>
+        <td>Server-side filtering and pagination; the dropdown is populated from the data, not hard-coded</td></tr>
+    <tr><td>3</td><td>Sign out, sign in as <code>john.doe@student.fet.edu</code></td>
+        <td>The admin item is absent, and the API refuses the request independently — the UI guard is convenience, not security</td></tr>
+    <tr><td>4</td><td>Try <code>DELETE /api/v1/audit/logs/</code> as admin</td>
+        <td><code>405 Method Not Allowed</code> — records cannot be altered or removed</td></tr>
+  </table>
+  <div class="rule"></div>
+  <div class="card warn"><h4>Bonus demo — the defect we closed</h4>
+    <p>Upload a one-row roster CSV as admin. Sign in as the student it creates
+       using the temporary password. Every screen is unreachable; the only path
+       offered is to replace the password. That lockout is now enforced by the
+       server, not by the browser.</p></div>
+</section>
+
+<!-- 12 ── GAPS -->
+<section class="slide">
+  <div class="eyebrow">Honest assessment</div>
+  <h2>Gaps we did not close</h2>
+  <p class="sub">Each needs a decision from the team, not a patch from us.</p>
+  <table>
+    <tr><th style="width:30%">Gap</th><th style="width:12%">Severity</th><th>Position</th></tr>
+    <tr><td><strong>Self-registration assigns roles</strong><br>
+        <span style="color:var(--ink3)">Anyone can register as a Lecturer with any email</span></td>
+        <td><span class="pill p-bd">High</span></td>
+        <td>Tested and deliberate, but it contradicts BR-002. Needs a decision:
+            approve lecturers by admin, or verify the staff number.</td></tr>
+    <tr><td><strong>No database provisioning</strong><br>
+        <span style="color:var(--ink3)">Postgres configured but not running</span></td>
+        <td><span class="pill p-wa">Medium</span></td>
+        <td>Running on SQLite. The compose file cannot start as written — it
+            requires a password variable and an env file that do not exist.</td></tr>
+    <tr><td><strong>Backend far ahead of the UI</strong><br>
+        <span style="color:var(--ink3)">119 routes vs roughly 25 screens</span></td>
+        <td><span class="pill p-wa">Medium</span></td>
+        <td>Classes, classrooms, materials, submissions and marks have working
+            APIs and no screen. The fastest visible wins live here.</td></tr>
+    <tr><td><strong>Milestones have no API</strong><br>
+        <span style="color:var(--ink3)">Model and route exist, undocumented</span></td>
+        <td><span class="pill p-in">Low</span></td>
+        <td>Specified in the database design, absent from the API spec. Either
+            document it or remove it.</td></tr>
+    <tr><td><strong>Unnumbered rules</strong><br>
+        <span style="color:var(--ink3)">Cannot be regression-tested</span></td>
+        <td><span class="pill p-in">Low</span></td>
+        <td>Concurrency, data minimisation and error-handling rules carry no IDs,
+            so nothing fails when they break.</td></tr>
+  </table>
+</section>
+
+<!-- 13 ── NEXT -->
+<section class="slide">
+  <div class="eyebrow">Recommendation</div>
+  <h2>What we would do next</h2>
+  <div class="grid g3">
+    <div class="card bad"><h4>1 · Close the registration hole</h4>
+      <p>Owner: accounts. New lecturer registrations require administrator
+         approval. Until then, consider disabling lecturer self-registration in
+         configuration. This is the highest-value fix remaining.</p></div>
+    <div class="card warn"><h4>2 · Provision PostgreSQL</h4>
+      <p>Owner: platform. Stand up the container, migrate, and prove the app on
+         the production-shaped database. Removes the SQLite-only limitation and
+         unblocks the compose deployment.</p></div>
+    <div class="card soft"><h4>3 · Close the UI gap</h4>
+      <p>Owner: frontend. Materials, classes and assessment marks already have
+         tested APIs. Screens here cost the least and show the most.</p></div>
+  </div>
+  <div class="rule"></div>
+  <div class="grid g2">
+    <div class="card"><h4>Make it permanent</h4>
+      <p>Pin rule IDs to test names. The moment a requirement has a number, it
+         can be regression-tested forever, and coverage becomes a number on a
+         dashboard instead of an opinion in a meeting.</p></div>
+    <div class="card"><h4>Close the documentation drift</h4>
+      <p>The README documents 27 endpoints that no longer exist and describes
+         Docker as "coming soon" while the compose file sits in the repository.
+         Generate the endpoint table from the resolver so it cannot go stale.</p></div>
+  </div>
+</section>
+
+<!-- 14 ── CLOSE -->
+<section class="slide title-slide">
+  <div class="badge">Summary</div>
+  <h1>One defect closed.<br>One capability shipped.</h1>
+  <p class="lede" style="margin:20px auto 30px">
+    The platform's foundations are genuinely solid — a consistent API contract,
+    real role enforcement, and 349 passing tests. The gap was not in what was
+    built, but in what was <em>verified</em>. Measuring against the
+    specifications found a security hole that documentation claimed was closed,
+    and a feature the role matrix promised that had no implementation at all.
+  </p>
+  <div class="grid g3" style="max-width:820px;margin:0 auto">
+    <div class="card ok"><h4>Closed</h4><p>Forced password change, now enforced
+      server-side and proven unbypassable.</p></div>
+    <div class="card ok"><h4>Shipped</h4><p>Security &amp; Audit Console — an admin
+      surface for records the platform already kept.</p></div>
+    <div class="card warn"><h4>Flagged</h4><p>Public role self-registration,
+      which needs a team decision, not a patch.</p></div>
+  </div>
+  <p class="sub" style="margin-top:32px">
+    System created by <strong>Ngong Song Dilan</strong> and the FET platform team.
+    Questions welcome.
+  </p>
+</section>
+
+</div>
+
+<footer>
+  <button class="nav" onclick="go(-1)">← Prev</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">14</span></span>
+  <button class="nav" onclick="go(1)">Next →</button>
+</footer>
+
+<script>
+  const slides = [...document.querySelectorAll('.slide')];
+  let i = 0;
+  document.getElementById('tot').textContent = slides.length;
+  function show(n){
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, k) => s.classList.toggle('active', k === i));
+    document.getElementById('cur').textContent = i + 1;
+    slides[i].scrollTop = 0;
+  }
+  function go(d){ show(i + d); }
+  document.addEventListener('keydown', e => {
+    if (['ArrowRight','PageDown',' '].includes(e.key)) { e.preventDefault(); go(1); }
+    if (['ArrowLeft','PageUp'].includes(e.key)) { e.preventDefault(); go(-1); }
+    if (e.key === 'Home') show(0);
+    if (e.key === 'End') show(slides.length - 1);
+  });
+  show(0);
+</script>
+</body>
+</html>

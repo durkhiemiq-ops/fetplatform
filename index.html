@@ -2,10 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- REMOVE THIS LINE -->
-    <!-- <link rel="icon" type="image/svg+xml" href="/vite.svg" /> -->
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FET - Project Management System</title>
+    <meta name="color-scheme" content="light dark" />
+    <title>FET Platform</title>
+    <script>
+      // Applied before first paint so a dark-mode user never sees a white flash.
+      (function () {
+        try {
+          var saved = localStorage.getItem('fet_theme');
+          if (!saved) {
+            saved = window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          }
+          if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+        } catch (e) { /* private mode: fall back to light */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

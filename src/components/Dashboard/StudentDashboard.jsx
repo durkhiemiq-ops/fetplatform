@@ -1,111 +1,91 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { useAppContext } from '../../context/AppContext';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  BookOpen, Clock, CheckCircle, Bell,
-  FolderKanban, ListTodo, AlertCircle
+  BookOpen, Clock, CheckCircle, Calendar,
+  FolderKanban, ListTodo, AlertCircle, Bell,
 } from 'lucide-react';
 import StatsCard from './StatsCard';
 import ActivityFeed from './ActivityFeed';
-import { taskStatusLabel } from '../../utils/mappers';
+import { dashboardApi } from '../../lib/dashboard';
+import { notificationsApi } from '../../lib/notifications';
+import { learningApi } from '../../lib/learning';
+import { errorMessage } from '../../lib/enrollment';
+import { formatDate, formatClock, relativeTime } from '../../lib/format';
 
-/**
- * StudentDashboard — reads only real API data.
- *
- * H5/M4: previously this imported the (now-emptied) mockData stub and read
- * `t.assignedTo` (a matricule), `project.progress` and `project.deadline` —
- * none of which exist on the backend. Tasks key on `assignee` (a user UUID);
- * Project has no progress/deadline columns; ProjectTask has no due_date.
- * Membership (not a group-name lookup) is the authoritative project link.
- */
+const EMPTY = {
+  stats: { enrolled_courses: 0, attendance_rate: '0%', active_projects: 0, pending_tasks: 0 },
+  courses: [],
+  today_classes: [],
+  announcements: [],
+  active_projects: [],
+  pending_tasks: [],
+  attendance: { total_sessions: 0, attended: 0, rate: 0 },
+};
+
+const statusBadge = (status) => {
+  const cls = {
+    COMPLETED: 'fet-badge fet-badge-completed',
+    IN_PROGRESS: 'fet-badge fet-badge-warning',
+    ACTIVE: 'fet-badge fet-badge-active',
+    DRAFT: 'fet-badge fet-badge-pending',
+  }[status] || 'fet-badge fet-badge-inactive';
+  return <span className={cls}>{String(status || '').replace(/_/g, ' ')}</span>;
+};
+
+const priorityBadge = (priority) => {
+  const cls = { HIGH: 'fet-badge-danger', MEDIUM: 'fet-badge-warning', LOW: 'fet-badge-info' }[priority]
+    || 'fet-badge-info';
+  return <span className={cls}>{priority}</span>;
+};
+
 const StudentDashboard = ({ user }) => {
-  const {
-    activities,
-    currentSemester,
-    currentSchoolYear,
-    tasks: allTasks,
-    announcements: allAnnouncements,
-    projects: allProjects,
-    memberships,
-    enrollments,
-    getCurrentSemesterStats,
-  } = useAppContext();
+  const navigate = useNavigate();
+  const [data, setData] = useState(EMPTY);
+  const [myCourses, setMyCourses] = useState([]);
+  const [activity, setActivity] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const [stats, setStats] = useState({
-    totalCourses: 0,
-    attendance: 0,
-    pendingTasks: 0,
-    completedTasks: 0,
-    activeProjects: 0,
-  });
-  const [recentAnnouncements, setRecentAnnouncements] = useState([]);
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      // One aggregate call rather than fanning out to five endpoints, then the
+      // two things it does not cover: the student's own course list, and the
+      // notification stream the backend raises on its own.
+      const [dash, courses, notes] = await Promise.all([
+        dashboardApi.get(),
+        learningApi.getMyCourses('student'),
+        notificationsApi.list().catch(() => []),
+      ]);
+      setData({ ...EMPTY, ...(dash || {}) });
+      setMyCourses(courses || []);
+      setActivity(notes || []);
+    } catch (err) {
+      setError(errorMessage(err, 'Could not load your dashboard.'));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const myUserId = user?.id;
-
-  // H5: `assignee` is a user UUID, so the filter must compare against the
-  // authenticated user's id — comparing to a matricule could never match.
-  const myTasks = useMemo(
-    () => allTasks.filter((t) => t.assignee && t.assignee === myUserId),
-    [allTasks, myUserId]
-  );
-
-  // Membership rows are the authoritative "which projects am I in" link.
-  const myProjectIds = useMemo(
-    () => new Set(memberships.filter((m) => m.studentId === myUserId).map((m) => m.projectId)),
-    [memberships, myUserId]
-  );
-  const studentProjects = useMemo(
-    () => allProjects.filter((p) => myProjectIds.has(p.id)),
-    [allProjects, myProjectIds]
-  );
-
-  useEffect(() => {
-    const pendingTasks = myTasks.filter((t) => t.status !== 'completed');
-    const completedTasks = myTasks.filter((t) => t.status === 'completed');
-    const semStats = getCurrentSemesterStats();
-
-    setStats({
-      totalCourses: (enrollments || []).length,
-      attendance: semStats?.attendance || 0,
-      pendingTasks: pendingTasks.length,
-      completedTasks: completedTasks.length,
-      activeProjects: studentProjects.length,
-    });
-
-    setRecentAnnouncements(allAnnouncements.slice(0, 3));
-  }, [enrollments, myTasks, studentProjects, allAnnouncements, getCurrentSemesterStats]);
+  useEffect(() => { load(); }, [load]);
 
   const studentName = user?.fullName || 'Student';
+  const rate = Number(String(data.stats.attendance_rate || '0').replace('%', '')) || 0;
 
   const statCards = [
-    { icon: FolderKanban, label: 'My Projects', value: stats.activeProjects, color: 'secondary' },
-    { icon: ListTodo, label: 'Pending Tasks', value: stats.pendingTasks, color: 'warning' },
-    { icon: CheckCircle, label: 'Completed Tasks', value: stats.completedTasks, color: 'success' },
-    { icon: BookOpen, label: 'Enrolled Courses', value: stats.totalCourses, color: 'info' },
+    { icon: FolderKanban, label: 'Active Projects', value: data.stats.active_projects, color: 'secondary' },
+    { icon: ListTodo, label: 'Pending Tasks', value: data.stats.pending_tasks, color: 'warning' },
+    { icon: BookOpen, label: 'Enrolled Courses', value: data.stats.enrolled_courses, color: 'info' },
+    { icon: CheckCircle, label: 'Attendance', value: `${rate}%`, color: 'success' },
   ];
 
-  const getTaskStatusBadge = (status) => {
-    switch (status) {
-      case 'completed': return 'fet-badge fet-badge-completed';
-      case 'in_progress': return 'fet-badge fet-badge-warning';
-      default: return 'fet-badge fet-badge-inactive';
-    }
-  };
-
-  const getTaskStatusIcon = (status) => {
-    switch (status) {
-      case 'completed': return <CheckCircle size={14} className="text-success" />;
-      case 'in_progress': return <Clock size={14} className="text-warning" />;
-      default: return <AlertCircle size={14} className="text-text-secondary" />;
-    }
-  };
-
-  const recentActivities = (activities || []).slice(0, 5).map((a) => ({
-    user: a.user,
-    action: a.action,
-    time:
-      new Date(a.time).toLocaleDateString() +
-      ' ' +
-      new Date(a.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+  // Notifications are the platform's own record of what happened to you.
+  const recentActivities = activity.slice(0, 5).map((n) => ({
+    id: n.id,
+    user: 'FET',
+    system: true,
+    action: `${n.title}${n.message ? ` — ${n.message}` : ''}`,
+    time: relativeTime(n.created_at),
   }));
 
   if (!user) {
@@ -122,17 +102,26 @@ const StudentDashboard = ({ user }) => {
         <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
             <h2 className="text-[20px] md:text-[22px] font-bold">Welcome back, {studentName}</h2>
-            <p className="text-white/50 text-[13px] mt-1">Here's what's happening with your projects today.</p>
+            <p className="text-white/50 text-[13px] mt-1">Here&apos;s what&apos;s happening today.</p>
             <p className="text-white/35 text-[12px] mt-0.5">
-              {currentSemester?.name} {currentSchoolYear?.name}
+              {myCourses.length > 0
+                ? `${myCourses.length} course${myCourses.length === 1 ? '' : 's'} this semester`
+                : 'Not enrolled in any courses yet'}
             </p>
           </div>
           <div className="bg-white/10 backdrop-blur-sm rounded-xl px-5 py-3 text-center min-w-[100px] border border-white/10">
             <p className="text-[11px] text-white/50 font-medium uppercase tracking-wider">Attendance</p>
-            <p className="text-[26px] font-bold text-white leading-tight">{stats.attendance}%</p>
+            <p className="text-[26px] font-bold text-white leading-tight">{rate}%</p>
           </div>
         </div>
       </div>
+
+      {error ? (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-[13px] flex items-center gap-2">
+          <AlertCircle size={16} /> {error}
+          <button onClick={load} className="ml-auto underline">Retry</button>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
         {statCards.map((stat, index) => (
@@ -140,42 +129,83 @@ const StudentDashboard = ({ user }) => {
         ))}
       </div>
 
+      {data.today_classes?.length > 0 ? (
+        <div className="fet-card p-4 md:p-5">
+          <h3 className="text-[14px] md:text-[15px] font-semibold text-text-primary flex items-center gap-2 mb-4">
+            <Calendar size={16} className="text-primary" strokeWidth={2} />
+            Today&apos;s Classes
+          </h3>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {data.today_classes.map((c) => (
+              <button
+                key={c.session_id}
+                onClick={() => navigate('/attendance')}
+                className="p-3 rounded-xl bg-page-bg text-left hover:bg-primary-light transition-colors"
+              >
+                <p className="font-medium text-text-primary text-[13px]">{c.class_name}</p>
+                <p className="text-[11.5px] text-text-secondary mt-0.5">
+                  {c.course_code} · {formatClock(new Date(c.starts_at).toTimeString().slice(0, 5))}
+                  {c.location ? ` · ${c.location}` : ''}
+                </p>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5">
         <div className="lg:col-span-2 space-y-4 md:space-y-5">
-          {/* My Projects — no progress bar: Project has no progress column. */}
+          {/* My Projects */}
           <div className="fet-card p-4 md:p-5">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-[14px] md:text-[15px] font-semibold text-text-primary flex items-center gap-2">
                 <FolderKanban size={16} className="text-primary" strokeWidth={2} />
                 My Projects
               </h3>
+              <button onClick={() => navigate('/projects')} className="text-[12px] text-primary hover:underline">
+                View all
+              </button>
             </div>
             <div className="space-y-3">
-              {studentProjects.length > 0 ? (
-                studentProjects.slice(0, 3).map((project) => (
-                  <div
-                    key={project.id}
-                    className="p-3.5 rounded-xl border border-border-default hover:shadow-card transition-shadow"
-                  >
-                    <div className="flex flex-col sm:flex-row items-start sm:justify-between gap-2">
-                      <div>
-                        <h4 className="font-semibold text-text-primary text-[13.5px]">{project.title}</h4>
-                        <p className="text-[12px] text-text-secondary mt-0.5">
-                          {project.supervisorName
-                            ? `Supervisor: ${project.supervisorName}`
-                            : 'No supervisor assigned'}
-                        </p>
+              {loading ? (
+                <p className="text-center text-text-secondary py-8 text-[13px]">Loading projects...</p>
+              ) : data.active_projects.length > 0 ? (
+                data.active_projects.slice(0, 3).map((p) => {
+                  const pct = p.task_count > 0
+                    ? Math.round((p.completed_task_count / p.task_count) * 100)
+                    : 0;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => navigate(`/projects/${p.id}`)}
+                      className="block w-full text-left p-3.5 rounded-xl border border-border-default hover:shadow-card transition-shadow"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+                        <div className="min-w-0">
+                          <h4 className="font-semibold text-text-primary text-[13.5px]">{p.title}</h4>
+                          <p className="text-[12px] text-text-secondary mt-0.5">
+                            {p.course_code}{p.group_name ? ` · ${p.group_name}` : ''}
+                          </p>
+                        </div>
+                        {statusBadge(p.status)}
                       </div>
-                      <span
-                        className={`fet-badge ${
-                          project.status === 'active' ? 'fet-badge-active' : 'fet-badge-pending'
-                        } self-start`}
-                      >
-                        {project.status}
-                      </span>
-                    </div>
-                  </div>
-                ))
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between text-[12px] text-text-secondary mb-1.5">
+                          <span>{p.completed_task_count}/{p.task_count} tasks</span>
+                          <span className="font-semibold text-text-primary">{pct}%</span>
+                        </div>
+                        <div className="fet-progress-bar">
+                          <div className="fet-progress-bar-fill" style={{ width: `${pct}%` }}></div>
+                        </div>
+                        {p.deadline ? (
+                          <p className="text-[11px] text-text-secondary mt-1.5">
+                            Deadline: {formatDate(p.deadline)}
+                          </p>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                })
               ) : (
                 <div className="text-center py-8">
                   <FolderKanban size={32} className="mx-auto text-text-secondary/30" />
@@ -185,40 +215,44 @@ const StudentDashboard = ({ user }) => {
             </div>
           </div>
 
-          {/* My Tasks — no due date column exists on ProjectTask. */}
+          {/* My Tasks */}
           <div className="fet-card p-4 md:p-5">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-[14px] md:text-[15px] font-semibold text-text-primary flex items-center gap-2">
                 <ListTodo size={16} className="text-primary" strokeWidth={2} />
                 My Tasks
               </h3>
+              <button onClick={() => navigate('/projects')} className="text-[12px] text-primary hover:underline">
+                View all
+              </button>
             </div>
             <div className="space-y-2">
-              {myTasks.length > 0 ? (
-                myTasks.slice(0, 4).map((task) => {
-                  const project = allProjects.find((p) => p.id === task.project);
-                  return (
-                    <div key={task.id} className="flex items-center justify-between p-3 rounded-xl bg-page-bg gap-3">
-                      <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <div
-                          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                          style={{ backgroundColor: 'rgba(63,53,181,0.08)' }}
-                        >
-                          {getTaskStatusIcon(task.status)}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-text-primary text-[13px] truncate">{task.title}</p>
-                          <p className="text-[11px] text-text-secondary truncate">{project?.title || 'Project'}</p>
-                        </div>
+              {loading ? (
+                <p className="text-center text-text-secondary py-6 text-[13px]">Loading tasks...</p>
+              ) : data.pending_tasks.length > 0 ? (
+                data.pending_tasks.slice(0, 4).map((t) => (
+                  <div key={t.id} className="flex items-center justify-between p-3 rounded-xl bg-page-bg gap-3">
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <div
+                        className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ backgroundColor: 'rgba(63,53,181,0.08)' }}
+                      >
+                        {t.status === 'IN_PROGRESS'
+                          ? <Clock size={14} className="text-warning" />
+                          : <ListTodo size={14} className="text-text-secondary" />}
                       </div>
-                      <span className={getTaskStatusBadge(task.status)}>{taskStatusLabel(task.status)}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-text-primary text-[13px] truncate">{t.title}</p>
+                        <p className="text-[11px] text-text-secondary truncate">{t.project}</p>
+                      </div>
                     </div>
-                  );
-                })
+                    {statusBadge(t.status)}
+                  </div>
+                ))
               ) : (
                 <div className="text-center py-8">
                   <ListTodo size={32} className="mx-auto text-text-secondary/30" />
-                  <p className="text-[13px] text-text-secondary mt-2">No tasks assigned to you</p>
+                  <p className="text-[13px] text-text-secondary mt-2">No tasks assigned</p>
                 </div>
               )}
             </div>
@@ -226,31 +260,69 @@ const StudentDashboard = ({ user }) => {
         </div>
 
         <div className="space-y-4 md:space-y-5">
+          {/* Upcoming Deadlines */}
           <div className="fet-card p-4 md:p-5">
             <h3 className="text-[14px] md:text-[15px] font-semibold text-text-primary flex items-center gap-2 mb-4">
-              <Bell size={16} className="text-primary" strokeWidth={2} />
-              Announcements
+              <Clock size={16} className="text-warning" strokeWidth={2} />
+              Upcoming Deadlines
             </h3>
             <div className="space-y-2">
-              {recentAnnouncements.length === 0 ? (
-                <p className="text-center text-text-secondary py-4 text-[13px]">No announcements</p>
+              {data.pending_tasks.filter((t) => t.due_at).length > 0 ? (
+                data.pending_tasks
+                  .filter((t) => t.due_at)
+                  .sort((a, b) => new Date(a.due_at) - new Date(b.due_at))
+                  .slice(0, 4)
+                  .map((t) => (
+                    <div key={t.id} className="p-3 rounded-xl bg-page-bg">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-medium text-text-primary text-[13px] truncate">{t.title}</p>
+                          <p className="text-[11px] text-text-secondary mt-0.5">
+                            {t.project} · Due {formatDate(t.due_at)}
+                          </p>
+                        </div>
+                        <span className="self-start flex-shrink-0">{priorityBadge(t.priority)}</span>
+                      </div>
+                    </div>
+                  ))
               ) : (
-                recentAnnouncements.map((a) => (
-                  <div key={a.id} className="p-3 rounded-xl bg-page-bg">
-                    <p className="font-medium text-text-primary text-[13px]">{a.title}</p>
-                    <p className="text-[11px] text-text-secondary mt-0.5 line-clamp-2">{a.content}</p>
-                    {a.date && (
-                      <p className="text-[10px] text-text-secondary mt-1 font-medium">
-                        {new Date(a.date).toLocaleDateString()}
-                      </p>
-                    )}
-                  </div>
-                ))
+                <p className="text-center text-text-secondary py-4 text-[13px]">No upcoming deadlines</p>
               )}
             </div>
           </div>
 
-          <ActivityFeed activities={recentActivities} />
+          {/* Announcements */}
+          <div className="fet-card p-4 md:p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[14px] md:text-[15px] font-semibold text-text-primary flex items-center gap-2">
+                <Bell size={16} className="text-primary" strokeWidth={2} />
+                Announcements
+              </h3>
+              <button onClick={() => navigate('/announcements')} className="text-[12px] text-primary hover:underline">
+                View all
+              </button>
+            </div>
+            <div className="space-y-2">
+              {data.announcements.length > 0 ? (
+                data.announcements.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => navigate('/announcements')}
+                    className="block w-full text-left p-3 rounded-xl bg-page-bg hover:bg-primary-light transition-colors"
+                  >
+                    <p className="font-medium text-text-primary text-[13px]">{a.title}</p>
+                    <p className="text-[10px] text-text-secondary mt-1 font-medium">
+                      {a.scope ? a.scope.replace(/_/g, ' ').toLowerCase() : ''} · {relativeTime(a.created_at)}
+                    </p>
+                  </button>
+                ))
+              ) : (
+                <p className="text-center text-text-secondary py-4 text-[13px]">No announcements</p>
+              )}
+            </div>
+          </div>
+
+          {recentActivities.length > 0 ? <ActivityFeed activities={recentActivities} /> : null}
         </div>
       </div>
     </div>

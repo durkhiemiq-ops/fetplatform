@@ -1,39 +1,37 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Bell, ChevronDown, User, School, LogOut, Settings, CheckCheck, X } from 'lucide-react';
-import { getNotifications, markNotificationRead, markAllNotificationsRead } from '../../api/notifications';
+import {
+  Search, Bell, ChevronDown, User, LogOut, Settings, CheckCheck, Moon, Sun,
+} from 'lucide-react';
+import { useTheme } from '../../context/ThemeContext';
+import { normalizeRole } from '../../lib/profile';
 
-/** Map backend notification row to the header's display shape. */
-const toDisplayNotification = (n) => ({
-  id: n.id,
-  title: n.title,
-  body: n.body,
-  category: (n.category || 'general').replace(/_/g, ' '),
-  time: n.created_at ? new Date(n.created_at).toLocaleString() : '',
-  read: Boolean(n.is_read),
-});
+const loadNotifications = () => {
+  try {
+    const stored = JSON.parse(localStorage.getItem('fet_notifications') || '[]');
+    if (stored.length > 0) return stored;
+  } catch (e) { /* ignore */ }
+  const initial = [
+    { id: 1, title: 'New announcement posted', time: '2 min ago', read: false, category: 'Announcement' },
+    { id: 2, title: 'Task assigned to you', time: '1 hour ago', read: false, category: 'Task' },
+    { id: 3, title: 'Assessment results released', time: '3 hours ago', read: true, category: 'Assessment' },
+  ];
+  localStorage.setItem('fet_notifications', JSON.stringify(initial));
+  return initial;
+};
 
 const Header = ({ user, onLogout }) => {
   const navigate = useNavigate();
+  const { theme, toggleTheme } = useTheme();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const [notifications, setNotifications] = useState([]);
+  const [notifications, setNotifications] = useState(loadNotifications);
   const notifRef = useRef(null);
   const profileRef = useRef(null);
 
-  // Load the authenticated user's inbox from the API on mount.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const rows = await getNotifications();
-        if (!cancelled) setNotifications(rows.map(toDisplayNotification));
-      } catch {
-        // Non-fatal: the inbox stays empty until the next login/poll.
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+    localStorage.setItem('fet_notifications', JSON.stringify(notifications));
+  }, [notifications]);
 
   useEffect(() => {
     const handleClick = (e) => {
@@ -45,154 +43,144 @@ const Header = ({ user, onLogout }) => {
   }, []);
 
   const name = user?.fullName || 'User';
-  const role = user?.role || 'student';
-  const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  const role = normalizeRole(user?.role || 'student');
+  const initials = name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
+  const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const unreadCount = notifications.filter(n => !n.read).length;
-
-  const markAsRead = async (id) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-    try { await markNotificationRead(id); } catch { /* idempotent on the server */ }
+  const markAsRead = (id) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
   };
-
-  const markAllAsRead = async () => {
-    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
-    try { await markAllNotificationsRead(); } catch { /* server stays authoritative */ }
+  const markAllAsRead = () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   };
 
   const handleLogout = () => {
+    localStorage.removeItem('fet_auth');
+    localStorage.removeItem('fet_user');
+    localStorage.removeItem('fet_user_role');
+    localStorage.removeItem('fet_user_name');
     if (onLogout) onLogout();
     else window.location.reload();
   };
 
-  const roleColor = role === 'admin' ? '#DC2626' : role === 'lecturer' ? '#3F35B5' : '#2563EB';
+  const panel = 'absolute right-0 top-full mt-2 w-80 bg-surface rounded-lg shadow-modal border border-border-default z-50 overflow-hidden';
+  const menuItem = 'w-full flex items-center gap-2.5 px-4 py-2.5 text-[13px] text-text-primary hover:bg-page-bg transition-colors text-left';
 
   return (
-    <header className="bg-white border-b border-border-default px-4 md:px-6 py-3 flex items-center justify-between">
-      {/* Left - Search */}
-      <div className="hidden md:flex relative flex-1 max-w-md">
-        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} strokeWidth={2} />
+    <header className="flex h-[58px] shrink-0 items-center gap-3 border-b border-border-default bg-surface px-4 md:px-6">
+      <div className="relative hidden md:block max-w-[430px] flex-1">
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
         <input
           type="text"
-          placeholder="Search courses, projects, tasks..."
-          className="fet-input pl-10 pr-4 py-2.5 text-[13px]"
-          style={{ backgroundColor: '#F6F7FB', border: '1px solid transparent' }}
+          placeholder="Search classrooms, projects, students"
+          className="fet-input pl-[34px] pr-16 text-[13px]"
+          style={{ backgroundColor: 'rgb(var(--canvas))' }}
         />
+        <span
+          className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 items-center rounded-[4px] border border-border-default bg-surface px-1.5 text-[10px] text-text-secondary md:flex"
+          style={{ height: 19, borderBottomWidth: 2 }}
+        >
+          Ctrl K
+        </span>
       </div>
 
-      {/* Mobile Title */}
-      <div className="lg:hidden flex items-center gap-2 pl-10">
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ backgroundColor: '#3F35B5' }}>
-          <span className="text-white font-bold text-[10px]">FET</span>
-        </div>
-        <span className="text-[14px] font-bold text-text-primary">FET</span>
-      </div>
+      <div className="flex-1" />
 
-      {/* Right - Actions */}
-      <div className="flex items-center gap-1 md:gap-2">
-        {/* Search icon on mobile */}
-        <button className="lg:hidden p-2 rounded-lg hover:bg-page-bg transition-colors" aria-label="Search">
-          <Search size={18} className="text-text-secondary" strokeWidth={2} />
+      <div className="flex items-center gap-1.5 md:gap-2">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="grid h-9 w-9 place-items-center rounded-md border border-border-default bg-surface text-text-secondary transition-colors hover:bg-page-bg"
+          aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          title={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+        >
+          {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
         </button>
 
-        {/* Notifications */}
         <div className="relative" ref={notifRef}>
           <button
-            onClick={() => { setShowNotifications(!showNotifications); setShowProfile(false); }}
-            className="relative p-2.5 rounded-xl hover:bg-page-bg transition-colors"
+            type="button"
+            onClick={() => { setShowNotifications((v) => !v); setShowProfile(false); }}
+            className="relative grid h-9 w-9 place-items-center rounded-md border border-border-default bg-surface text-text-secondary transition-colors hover:bg-page-bg"
             aria-label="Notifications"
           >
-            <Bell size={18} className="text-text-secondary" strokeWidth={2} />
-            {unreadCount > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-[18px] h-[18px] bg-danger text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                {unreadCount}
-              </span>
-            )}
+            <Bell size={16} />
+            {unreadCount > 0 ? (
+              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-danger ring-2 ring-surface" />
+            ) : null}
           </button>
 
-          {showNotifications && (
-            <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-2xl shadow-dropdown border border-border-default z-50 overflow-hidden">
-              <div className="px-4 py-3 flex items-center justify-between border-b border-border-default">
-                <p className="font-semibold text-text-primary text-[14px]">Notifications</p>
+          {showNotifications ? (
+            <div className={panel}>
+              <div className="flex items-center justify-between border-b border-border-default px-4 py-3">
+                <p className="text-[13px] font-semibold text-text-primary">Notifications</p>
                 <button
+                  type="button"
                   onClick={markAllAsRead}
-                  className="flex items-center gap-1 text-[12px] text-primary font-medium hover:opacity-80 transition-opacity"
+                  className="flex items-center gap-1 text-[12px] font-medium text-primary hover:opacity-80"
                 >
                   <CheckCheck size={14} /> Mark all read
                 </button>
               </div>
               <div className="max-h-72 overflow-y-auto">
-                {notifications.length === 0 && (
-                  <p className="text-center text-text-secondary py-8 text-[13px]">No notifications</p>
-                )}
-                {notifications.map(n => (
+                {notifications.length === 0 ? (
+                  <p className="py-8 text-center text-[13px] text-text-secondary">No notifications</p>
+                ) : notifications.map((n) => (
                   <button
                     key={n.id}
+                    type="button"
                     onClick={() => markAsRead(n.id)}
-                    className={`w-full text-left px-4 py-3 border-b border-border-default/50 last:border-0 hover:bg-page-bg transition-colors ${!n.read ? 'bg-primary-light/30' : ''}`}
+                    className={`w-full border-b border-border-default/50 px-4 py-3 text-left transition-colors last:border-0 hover:bg-page-bg ${n.read ? '' : 'bg-primary-light/40'}`}
                   >
-                    <span className="text-[10px] uppercase tracking-wider text-primary font-bold">{n.category}</span>
-                    <p className="text-[13px] text-text-primary mt-0.5 font-medium">{n.title}</p>
-                    <p className="text-[11px] text-text-secondary mt-0.5">{n.time}</p>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-primary">{n.category}</span>
+                    <p className="mt-0.5 text-[13px] font-medium text-text-primary">{n.title}</p>
+                    <p className="mt-0.5 text-[11px] text-text-secondary">{n.time}</p>
                   </button>
                 ))}
               </div>
             </div>
-          )}
+          ) : null}
         </div>
 
-        {/* Profile */}
         <div className="relative" ref={profileRef}>
           <button
-            onClick={() => { setShowProfile(!showProfile); setShowNotifications(false); }}
-            className="flex items-center gap-2.5 pl-3 pr-2 py-1.5 rounded-xl hover:bg-page-bg transition-colors"
+            type="button"
+            onClick={() => { setShowProfile((v) => !v); setShowNotifications(false); }}
+            className="flex items-center gap-2.5 rounded-md py-1 pl-1 pr-2 transition-colors hover:bg-page-bg"
             aria-label="Profile menu"
           >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white text-[12px]" style={{ backgroundColor: roleColor }}>
-              {initials}
-            </div>
-            <div className="hidden sm:block text-left">
-              <p className="text-[13px] font-semibold text-text-primary leading-tight truncate max-w-[100px]">{name}</p>
-              <p className="text-[11px] text-text-secondary capitalize">{role}</p>
-            </div>
-            <ChevronDown size={14} className="text-text-secondary hidden sm:block" />
+            <span className="ui-avatar h-8 w-8 bg-primary text-[12px]">{initials}</span>
+            <span className="hidden text-left sm:block">
+              <span className="block max-w-[110px] truncate text-[13px] font-medium leading-tight text-text-primary">{name}</span>
+              <span className="block text-[11px] capitalize leading-tight text-text-secondary">{role}</span>
+            </span>
+            <ChevronDown size={14} className="hidden text-text-secondary sm:block" />
           </button>
 
-          {showProfile && (
-            <div className="absolute right-0 top-full mt-2 w-52 bg-white rounded-2xl shadow-dropdown border border-border-default z-50 overflow-hidden">
-              <div className="px-4 py-3 border-b border-border-default">
-                <p className="font-semibold text-text-primary text-[13px]">{name}</p>
-                <p className="text-[11px] text-text-secondary capitalize">{role}</p>
+          {showProfile ? (
+            <div className="absolute right-0 top-full mt-2 w-52 overflow-hidden rounded-lg border border-border-default bg-surface shadow-modal">
+              <div className="border-b border-border-default px-4 py-3">
+                <p className="text-[13px] font-semibold text-text-primary">{name}</p>
+                <p className="text-[11px] capitalize text-text-secondary">{role}</p>
               </div>
               <div className="py-1">
-                <button
-                  onClick={() => { setShowProfile(false); navigate('/profile'); }}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-[13px] hover:bg-page-bg transition-colors text-text-primary"
-                >
-                  <User size={15} strokeWidth={2} /> Profile
+                <button type="button" className={menuItem} onClick={() => { setShowProfile(false); navigate('/profile'); }}>
+                  <User size={15} /> Profile
                 </button>
-                <button
-                  onClick={() => { setShowProfile(false); navigate('/academic'); }}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-[13px] hover:bg-page-bg transition-colors text-text-primary"
-                >
-                  <School size={15} strokeWidth={2} /> Academic
+                <button type="button" className={menuItem} onClick={() => { setShowProfile(false); navigate('/settings'); }}>
+                  <Settings size={15} /> Settings
                 </button>
+                <div className="mx-3 my-1 h-px bg-border-default" />
                 <button
-                  onClick={() => { setShowProfile(false); navigate('/profile'); }}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-[13px] hover:bg-page-bg transition-colors text-text-primary"
-                >
-                  <Settings size={15} strokeWidth={2} /> Settings
-                </button>
-                <div className="mx-3 my-1 h-px bg-border-default"></div>
-                <button
+                  type="button"
                   onClick={handleLogout}
-                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-[13px] text-danger hover:bg-red-50 transition-colors"
+                  className="flex w-full items-center gap-2.5 px-4 py-2.5 text-[13px] text-danger transition-colors hover:bg-red-50"
                 >
-                  <LogOut size={15} strokeWidth={2} /> Logout
+                  <LogOut size={15} /> Sign out
                 </button>
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </header>

@@ -2,24 +2,23 @@ import React from 'react';
 import StudentDashboard from './StudentDashboard';
 import LecturerDashboard from './LecturerDashboard';
 import CoordinatorDashboard from './CoordinatorDashboard';
+import AdminDashboard from '../../Pages/Admin/AdminDashboard';
+import { normalizeRole } from '../../lib/profile';
 
-/**
- * Routes to the role-appropriate dashboard.
- *
- * C2: the user and role now come from props (populated from the authenticated
- * session in App.jsx). This previously parsed localStorage, which anyone can
- * edit in devtools — a student could claim the lecturer dashboard.
- */
-const DashboardHome = ({ user }) => {
-  const role = user?.role || 'student';
+const DashboardHome = () => {
+  const user = JSON.parse(localStorage.getItem('fet_user') || '{}');
+  const role = normalizeRole(user?.role || localStorage.getItem('fet_user_role'));
 
+  if (role === 'admin') {
+    return <AdminDashboard user={user} />;
+  }
   if (role === 'coordinator') {
     return <CoordinatorDashboard user={user} />;
-  } else if (role === 'lecturer' || role === 'admin') {
-    return <LecturerDashboard user={user} />;
-  } else {
-    return <StudentDashboard user={user} />;
   }
+  if (role === 'lecturer') {
+    return <LecturerDashboard user={user} />;
+  }
+  return <StudentDashboard user={user} />;
 };
 
 export default DashboardHome;

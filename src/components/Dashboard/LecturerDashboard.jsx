@@ -1,216 +1,326 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Users, FolderKanban, CheckCircle, Clock, 
-  BookOpen, AlertCircle, QrCode, Search
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Users, QrCode, Award, AlertTriangle, BookOpen, ArrowRight, Plus, Loader2,
+  MessageSquare, ClipboardCheck, Megaphone, FileText, Calendar, Clock, MapPin,
+  TrendingUp, Layers, CheckCircle2, UserCheck, LayoutDashboard, AlertCircle,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { SectionHeader, Callout } from '../UI';
 import StatsCard from './StatsCard';
-import ActivityFeed from './ActivityFeed';
-import { useAppContext } from '../../context/AppContext';
+import attendanceApi from '../../lib/attendance';
+
+const DAYS = ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'];
+
+const fmtTime = (t) => (t ? String(t).slice(0, 5) : '');
+
+const dayLabel = (d) => (d ? d.charAt(0) + d.slice(1).toLowerCase() : '');
 
 const LecturerDashboard = ({ user }) => {
   const navigate = useNavigate();
-  const { students, projects, tasks, attendanceRecords, classSessions } = useAppContext();
-  const [stats, setStats] = useState({ 
-    enrolled: 0,
-    present: 0,
-    late: 0,
-    notCheckedIn: 0,
-    courses: 0,
-    projects: 0,
-    pending: 0,
-  });
-  const [reviewRows, setReviewRows] = useState([]);
-  const [searchTerm, setSearchTerm] = useState('');
-
   const lecturerName = user?.fullName || 'Lecturer';
-  const lecturerDepartment = user?.department || 'Engineering';
-  const lecturerTitle = user?.title || 'Lecturer';
 
-  useEffect(() => {
-    // H5: attendance records use `status: 'PRESENT'` and carry `student_name`
-    // directly; the old code filtered on 'Present'/'Late'/'Review' and joined to
-    // a student by a matricule that the record does not carry.
-    const present = attendanceRecords.filter((a) => a.status === 'PRESENT').length;
-    const notCheckedIn = Math.max(0, students.length - present);
+  const [courses, setCourses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-    setStats({
-      enrolled: students.length,
-      present,
-      late: 0, // the backend has no LATE status; see mappers.mapAttendanceRecord
-      notCheckedIn,
-      courses: classSessions.length,
-      projects: projects.filter(
-        (p) => p.supervisor === user?.id || p.owner === user?.id || p.supervisorName === lecturerName
-      ).length,
-      pending: tasks.filter((t) => t.status !== 'completed').length,
-    });
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await attendanceApi.lecturerCourses();
+      setCourses(Array.isArray(data) ? data : []);
+    } catch {
+      setError('Could not load your teaching data.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-    setReviewRows(
-      attendanceRecords
-        .filter((r) => r.corrected)
-        .map((r) => ({ fullName: r.student_name || r.studentName || '—', id: r.id, status: 'Corrected' }))
-    );
-  }, [students, attendanceRecords, projects, tasks, classSessions, user, lecturerName]);
+  useEffect(() => { load(); }, [load]);
 
-  const statCards = [
-    { icon: Users, label: 'Total Students', value: stats.enrolled, color: 'secondary' },
-    { icon: CheckCircle, label: 'Present Today', value: stats.present, color: 'success' },
-    { icon: Clock, label: 'Late Arrivals', value: stats.late, color: 'warning' },
-    { icon: AlertCircle, label: 'Absent', value: stats.notCheckedIn, color: 'error' },
-  ];
-
-  const filteredReviewRows = reviewRows.filter(s =>
-    s.fullName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    s.id.toLowerCase().includes(searchTerm.toLowerCase())
+  const totals = courses.reduce(
+    (acc, c) => ({
+      students: acc.students + (c.enrolled_students || 0),
+      ungraded: acc.ungraded + (c.ungraded_submissions || 0),
+      disputes: acc.disputes + (c.open_disputes || 0),
+      assessments: acc.assessments + (c.assessments_count || 0),
+    }),
+    { students: 0, ungraded: 0, disputes: 0, assessments: 0 },
   );
 
+  const today = DAYS[new Date().getDay()];
+  const todaysClasses = courses.flatMap((c) =>
+    (c.schedules || [])
+      .filter((s) => s.day_of_week === today)
+      .map((s) => ({ ...s, course_code: c.course_code, offering_id: c.offering_id, location: s.location })),
+  ).sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
+
+  const attention = courses.filter(
+    (c) => (c.ungraded_submissions || 0) > 0 || (c.open_disputes || 0) > 0,
+  );
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-3">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <p className="text-sm text-text-secondary">Loading your teaching workspace…</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-5 max-w-7xl mx-auto">
-      {/* Welcome Banner */}
-      <div className="fet-welcome-banner">
-        <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-[20px] md:text-[22px] font-bold">Welcome back, {lecturerName}</h2>
-            <p className="text-white/50 text-[13px]">{lecturerTitle} · {lecturerDepartment} Department</p>
-            <p className="text-white/35 text-[12px] mt-0.5">Teaching {stats.courses} courses this semester</p>
-          </div>
-          <div className="bg-white/10 backdrop-blur-sm rounded-xl px-5 py-3 text-center min-w-[100px] border border-white/10">
-            <p className="text-[11px] text-white/50 font-medium uppercase tracking-wider">Students</p>
-            <p className="text-[26px] font-bold text-white leading-tight">{stats.enrolled}</p>
-          </div>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <SectionHeader
+        area="hub"
+        icon={LayoutDashboard}
+        title={lecturerName}
+        subtitle={`${user?.department || 'Department'} · ${user?.title || 'Lecturer'} · ${courses.length} course${courses.length === 1 ? '' : 's'} · ${totals.students} student${totals.students === 1 ? '' : 's'}`}
+        crumb={[{ label: 'FET Platform' }, { label: 'Dashboard' }]}
+        actions={(
+          <>
+            <button type="button" onClick={() => navigate('/lessons')} className="fet-btn-secondary">
+              <Plus size={15} /> New classroom
+            </button>
+            <button type="button" onClick={() => navigate('/attendance')} className="fet-btn-primary">
+              <QrCode size={15} /> Take attendance
+            </button>
+          </>
+        )}
+      />
 
-      {/* Stats Cards */}
+      {error ? (
+        <Callout tone="bd" icon={AlertCircle}>
+          <div className="flex items-center justify-between gap-3">
+            <span>{error}</span>
+            <button type="button" onClick={load} className="font-medium underline">Retry</button>
+          </div>
+        </Callout>
+      ) : null}
+
+      {/* Teaching load */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
-        {statCards.map((stat, index) => (
-          <StatsCard key={index} {...stat} />
-        ))}
+        <StatsCard icon={BookOpen} label="Courses Taught" value={courses.length} color="primary" />
+        <StatsCard icon={Users} label="Students Taught" value={totals.students} color="secondary" />
+        <StatsCard
+          icon={ClipboardCheck}
+          label="To Grade"
+          value={totals.ungraded}
+          color={totals.ungraded > 0 ? 'warning' : 'secondary'}
+        />
+        <StatsCard
+          icon={AlertTriangle}
+          label="Mark Disputes"
+          value={totals.disputes}
+          color={totals.disputes > 0 ? 'error' : 'secondary'}
+        />
       </div>
 
-      {/* QR Section + Review */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5">
-        <div className="lg:col-span-1">
-          <div className="fet-card p-5">
-            <h3 className="text-[15px] font-semibold text-text-primary mb-4">Quick Attendance</h3>
-            <div className="p-6 rounded-xl text-center" style={{ backgroundColor: 'rgba(63,53,181,0.04)', border: '1px dashed rgba(63,53,181,0.2)' }}>
-              <QrCode size={48} className="mx-auto text-primary" strokeWidth={1.5} />
-              <p className="text-[13px] text-text-secondary mt-3">Generate a QR code for your next lecture</p>
-              <button
-                onClick={() => navigate('/attendance')}
-                className="fet-btn-primary mt-4 px-6"
-              >
-                Generate QR
-              </button>
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 md:gap-5">
+        {/* Main column */}
+        <div className="xl:col-span-2 space-y-4 md:space-y-5">
+          {/* Needs attention */}
+          {attention.length > 0 && (
+            <div className="fet-card p-5">
+              <h3 className="text-[15px] font-semibold text-text-primary flex items-center gap-2">
+                <TrendingUp size={16} className="text-warning" /> Needs your attention
+              </h3>
+              <p className="text-xs text-text-secondary mt-0.5 mb-4">
+                Work waiting on you across your courses.
+              </p>
+              <div className="space-y-2">
+                {attention.map((c) => (
+                  <button
+                    key={c.offering_id}
+                    onClick={() => navigate(`/lessons/${c.offering_id}`)}
+                    className="w-full flex items-center justify-between gap-3 p-3 rounded-xl bg-page-bg border border-transparent hover:border-border-default hover:bg-primary/5 text-left transition-colors"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span className="font-semibold text-text-primary text-sm shrink-0">{c.course_code}</span>
+                      <span className="text-sm text-text-secondary truncate">{c.course_title}</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {c.ungraded_submissions > 0 && (
+                        <span className="text-xs px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                          {c.ungraded_submissions} to grade
+                        </span>
+                      )}
+                      {c.open_disputes > 0 && (
+                        <span className="text-xs px-2 py-1 rounded-full bg-red-50 text-red-700 border border-red-200">
+                          {c.open_disputes} dispute{c.open_disputes === 1 ? '' : 's'}
+                        </span>
+                      )}
+                      <ArrowRight size={15} className="text-text-secondary" />
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-2">
-              <div className="text-center p-2.5 rounded-lg bg-page-bg">
-                <p className="text-[18px] font-bold text-text-primary">{stats.enrolled}</p>
-                <p className="text-[10px] text-text-secondary font-medium">Enrolled</p>
-              </div>
-              <div className="text-center p-2.5 rounded-lg bg-page-bg">
-                <p className="text-[18px] font-bold text-success">{stats.present}</p>
-                <p className="text-[10px] text-text-secondary font-medium">Present</p>
-              </div>
-              <div className="text-center p-2.5 rounded-lg bg-page-bg">
-                <p className="text-[18px] font-bold text-danger">{stats.notCheckedIn}</p>
-                <p className="text-[10px] text-text-secondary font-medium">Absent</p>
-              </div>
-            </div>
-          </div>
-        </div>
+          )}
 
-        <div className="lg:col-span-2">
+          {/* My classrooms */}
           <div className="fet-card p-5">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-[15px] font-semibold text-text-primary flex items-center gap-2">
-                <Users size={16} className="text-primary" strokeWidth={2} />
-                Attendance Review
+                <BookOpen size={16} className="text-primary" /> My Classrooms
               </h3>
-              {reviewRows.length > 0 && (
-                <button onClick={() => navigate('/attendance')} className="text-[12px] text-primary font-semibold hover:opacity-80">
-                  View All →
+              <button
+                onClick={() => navigate('/lessons')}
+                className="text-xs text-primary font-semibold hover:opacity-80"
+              >
+                Manage →
+              </button>
+            </div>
+
+            {courses.length === 0 ? (
+              <div className="text-center py-10">
+                <BookOpen size={40} className="mx-auto text-text-secondary opacity-40" />
+                <p className="text-sm text-text-secondary mt-3">No classrooms yet</p>
+                <button onClick={() => navigate('/lessons')} className="fet-btn-primary mt-4">
+                  Create your first classroom
                 </button>
-              )}
-            </div>
-            <div className="relative mb-4">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={15} />
-              <input
-                type="text"
-                placeholder="Search students..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="fet-input pl-9 pr-4 py-2 text-[13px]"
-              />
-            </div>
-            {filteredReviewRows.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="fet-table">
-                  <thead>
-                    <tr>
-                      <th>Student</th>
-                      <th>ID</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredReviewRows.map((s, i) => (
-                      <tr key={i}>
-                        <td className="font-medium">{s.fullName}</td>
-                        <td className="text-text-secondary text-[12px]">{s.id}</td>
-                        <td>
-                          <span className="fet-badge fet-badge-review">{s.status}</span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
             ) : (
-              <div className="text-center py-8">
-                <CheckCircle size={32} className="mx-auto text-success/50" />
-                <p className="text-[13px] text-text-secondary mt-2">No records requiring review</p>
-                <p className="text-[11px] text-text-secondary">Start an attendance session to begin capturing student attendance.</p>
+              <div className="space-y-3">
+                {courses.map((c) => (
+                  <div
+                    key={c.offering_id}
+                    className="p-4 rounded-xl bg-page-bg border border-transparent hover:border-border-default transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-text-primary text-sm">{c.course_code}</p>
+                        <p className="text-sm text-text-secondary">{c.course_title}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => navigate(`/lessons/${c.offering_id}`)}
+                          className="text-primary text-xs font-semibold flex items-center gap-1 hover:underline"
+                        >
+                          Open <ArrowRight size={14} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 pt-3 border-t border-border-default flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-text-secondary">
+                      <span className="flex items-center gap-1"><Users size={13} /> {c.enrolled_students} students</span>
+                      <span className="flex items-center gap-1"><FileText size={13} /> {c.materials_count} materials</span>
+                      <span className="flex items-center gap-1"><ClipboardCheck size={13} /> {c.assignments_count} assignments</span>
+                      <span className="flex items-center gap-1"><Award size={13} /> {c.assessments_count} assessments</span>
+                      <span className="flex items-center gap-1"><Megaphone size={13} /> {c.announcements_count} posts</span>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => navigate(`/lessons/${c.offering_id}`)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-white flex items-center gap-1.5"
+                      >
+                        <FileText size={13} /> Materials
+                      </button>
+                      <button
+                        onClick={() => navigate(`/lessons/${c.offering_id}`)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-white flex items-center gap-1.5"
+                      >
+                        <ClipboardCheck size={13} /> Assignments
+                      </button>
+                      <button
+                        onClick={() => navigate(`/assessment`)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-white flex items-center gap-1.5"
+                      >
+                        <Award size={13} /> Marks
+                      </button>
+                      <button
+                        onClick={() => navigate(`/attendance`)}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-white flex items-center gap-1.5"
+                      >
+                        <QrCode size={13} /> Attendance
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
         </div>
-      </div>
 
-      {/* My Class Sessions */}
-      <div className="fet-card p-5">
-        <h3 className="text-[15px] font-semibold text-text-primary flex items-center gap-2 mb-4">
-          <BookOpen size={16} className="text-primary" strokeWidth={2} />
-          My Class Sessions ({classSessions.length})
-        </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {classSessions.length > 0 ? (
-            classSessions.map((cs) => (
-              <div
-                key={cs.id}
-                className="flex items-center justify-between p-3.5 rounded-xl bg-page-bg border border-transparent hover:border-border-default transition-colors"
-              >
-                <div className="min-w-0">
-                  <p className="font-semibold text-text-primary text-[13px]">
-                    {cs.courseCode || '\u2014'}
-                  </p>
-                  <p className="text-[12px] text-text-secondary mt-0.5 truncate">
-                    {cs.lecturerName || '\u2014'}
-                  </p>
-                </div>
-                <div className="text-right flex-shrink-0 ml-2">
-                  <p className="text-[11px] text-text-secondary">
-                    {cs.startsAt ? new Date(cs.startsAt).toLocaleDateString() : '\u2014'}
-                  </p>
-                </div>
+        {/* Side column */}
+        <div className="space-y-4 md:space-y-5">
+          {/* Today's timetable */}
+          <div className="fet-card p-5">
+            <h3 className="text-[15px] font-semibold text-text-primary flex items-center gap-2 mb-3">
+              <Calendar size={16} className="text-primary" /> Today · {dayLabel(today)}
+            </h3>
+            {todaysClasses.length === 0 ? (
+              <div className="text-center py-6">
+                <CheckCircle2 size={30} className="mx-auto text-success/50" />
+                <p className="text-sm text-text-secondary mt-2">No classes scheduled today</p>
               </div>
-            ))
-          ) : (
-            <p className="text-center text-text-secondary py-4 text-[13px] col-span-full">
-              No class sessions assigned
-            </p>
-          )}
+            ) : (
+              <div className="space-y-2">
+                {todaysClasses.map((s, i) => (
+                  <div key={`${s.id}-${i}`} className="p-3 rounded-xl bg-page-bg">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-text-primary text-sm">{s.course_code}</span>
+                      <span className="text-xs text-text-secondary font-mono">
+                        {fmtTime(s.start_time)}–{fmtTime(s.end_time)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-text-secondary mt-1 flex items-center gap-1">
+                      <MapPin size={12} /> {s.location || 'Room TBC'}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Assessment overview */}
+          <div className="fet-card p-5">
+            <h3 className="text-[15px] font-semibold text-text-primary flex items-center gap-2 mb-3">
+              <Award size={16} className="text-primary" /> Assessment
+            </h3>
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div className="p-3 rounded-xl bg-page-bg text-center">
+                <p className="text-xl font-bold text-text-primary">{totals.assessments}</p>
+                <p className="text-[11px] text-text-secondary">Sheets created</p>
+              </div>
+              <div className="p-3 rounded-xl bg-page-bg text-center">
+                <p className={`text-xl font-bold ${totals.disputes > 0 ? 'text-danger' : 'text-text-primary'}`}>
+                  {totals.disputes}
+                </p>
+                <p className="text-[11px] text-text-secondary">Student queries</p>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/assessment')}
+              className="w-full fet-btn-secondary flex items-center justify-center gap-2 text-sm"
+            >
+              <Layers size={15} /> Enter marks &amp; combined grades
+            </button>
+          </div>
+
+          {/* Students */}
+          <div className="fet-card p-5">
+            <h3 className="text-[15px] font-semibold text-text-primary flex items-center gap-2 mb-3">
+              <UserCheck size={16} className="text-primary" /> My students
+            </h3>
+            <div className="space-y-2">
+              {courses.filter((c) => c.enrolled_students > 0).map((c) => (
+                <button
+                  key={c.offering_id}
+                  onClick={() => navigate(`/lessons/${c.offering_id}`)}
+                  className="w-full flex items-center justify-between gap-2 p-2.5 rounded-lg hover:bg-page-bg text-left transition-colors"
+                >
+                  <span className="text-sm text-text-primary font-medium">{c.course_code}</span>
+                  <span className="text-xs text-text-secondary flex items-center gap-1">
+                    <Users size={12} /> {c.enrolled_students}
+                  </span>
+                </button>
+              ))}
+              {courses.length === 0 && (
+                <p className="text-sm text-text-secondary text-center py-3">No students yet</p>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
