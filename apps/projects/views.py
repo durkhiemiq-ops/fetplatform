@@ -44,6 +44,7 @@ from .serializers import (
 from .services.project_service import (
     ArchiveError,
     DuplicateGroupMembershipError,
+    ProjectGroupNotInProjectError,
     InvalidProjectStatusError,
     MilestoneError,
     MilestoneNotFoundError,
@@ -61,6 +62,7 @@ from .services.project_service import (
     create_task,
     delete_milestone,
     record_contribution,
+    remove_project_member,
     review_contribution,
     update_milestone,
     update_task_status,
@@ -102,6 +104,17 @@ def _visible_projects(user):
     ).distinct()
 
 
+def _group_in_project_lookup(project_id, group_id) -> bool:
+    """BR-102/170 + IDOR: does ``group_id`` belong to ``project_id``?
+
+    This is the project-scoped probe the service requires. It replaces the
+    previous bare ``ProjectGroup.objects.filter(pk=group_id).exists()``, which
+    answered "does this group exist anywhere" and let a manager of project A
+    write a membership row pointing at project B's group.
+    """
+    return ProjectGroup.objects.filter(pk=group_id, project_id=project_id).exists()
+
+
 def _owner_lookup(owner_id) -> bool:
     """create_project's BR-100/170 authorization probe: owner must be a real,
     authorized academic identity."""
@@ -140,7 +153,9 @@ def _evidence_lookup(
         return False
     try:
         return ProjectTask.objects.filter(
-            pk=evidence_ref, project_id=project_id
+            Q(assignee_id=student_id) | Q(group__memberships__student_id=student_id),
+            pk=evidence_ref,
+            project_id=project_id,
         ).exists()
     except (ValueError, DjangoValidationError, TypeError):
         return False
@@ -203,7 +218,9 @@ class ProjectDetailView(APIView):
         )
 
     def patch(self, request, pk):
-        project = Project.objects.filter(pk=pk).first()
+        # Scope before lookup: a private project outside the caller's visible
+        # set is indistinguishable from a missing UUID (§25).
+        project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
         serializer = ProjectStatusSerializer(data=request.data)
@@ -233,7 +250,7 @@ class ProjectGroupCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        project = Project.objects.filter(pk=pk).first()
+        project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
         if not _can_manage(request.user, project):
@@ -256,17 +273,18 @@ class ProjectMemberCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        project = Project.objects.filter(pk=pk).first()
+        project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
         serializer = MemberCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
         group_id = validated.get("group")
-        if group_id is not None and not ProjectGroup.objects.filter(pk=group_id).exists():
-            return _error("INVALID_INPUT", "Group does not exist.", 400)
         try:
             # BR-101/102: explicit assignment, authorization, no duplicates.
+            # group_lookup is project-scoped: the group must belong to THIS
+            # project, otherwise a manager of project A could write a
+            # membership row pointing at project B's group (IDOR).
             record = add_project_member(
                 ProjectModel=Project,
                 project_id=project.pk,
@@ -278,9 +296,12 @@ class ProjectMemberCreateView(APIView):
                 actor_authorizer=lambda actor_id, project: _can_manage(
                     request.user, project
                 ),
+                group_lookup=_group_in_project_lookup,
             )
         except DuplicateGroupMembershipError as exc:
             return _error("DUPLICATE_MEMBER", str(exc), 409)
+        except ProjectGroupNotInProjectError as exc:
+            return _error("NOT_FOUND", "Project group not found.", 404)
         except UnauthorizedProjectActionError as exc:
             return _error("UNAUTHORIZED", str(exc), 403)
         except ProjectMembershipError as exc:
@@ -290,11 +311,70 @@ class ProjectMemberCreateView(APIView):
         return _success(MembershipSerializer(record).data, 201)
 
 
+class ProjectMemberDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk, group_id, student_id):
+        project = _visible_projects(request.user).filter(pk=pk).first()
+        if project is None:
+            return _error("NOT_FOUND", "Project membership not found.", 404)
+        membership = ProjectGroupMembership.objects.select_related("project").filter(
+            project=project,
+            group_id=group_id,
+            student_id=student_id,
+        ).first()
+        if membership is None:
+            return _error("NOT_FOUND", "Project membership not found.", 404)
+        try:
+            remove_project_member(
+                membership=membership,
+                actor_id=request.user.id,
+                actor_authorizer=lambda actor_id, project: _can_manage(
+                    request.user, project
+                ),
+            )
+        except UnauthorizedProjectActionError as exc:
+            return _error("UNAUTHORIZED", str(exc), 403)
+        except ProjectError as exc:
+            return _error("INVALID_INPUT", str(exc), 400)
+        return _success({"removed": True})
+
+
+class ProjectCandidatesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        project = _visible_projects(request.user).filter(pk=pk).first()
+        if project is None:
+            return _error("NOT_FOUND", "Project not found.", 404)
+        if not _can_manage(request.user, project):
+            return _error(
+                "UNAUTHORIZED",
+                "Only the project owner or supervisor may list candidates.",
+                403,
+            )
+        assigned_ids = project.memberships.values_list("student_id", flat=True)
+        candidates = User.objects.filter(role=User.Role.STUDENT).exclude(
+            pk__in=assigned_ids
+        ).order_by("first_name", "last_name", "username")
+        return _success(
+            [
+                {
+                    "id": student.id,
+                    "first_name": student.first_name,
+                    "last_name": student.last_name,
+                    "username": student.username,
+                }
+                for student in candidates
+            ]
+        )
+
+
 class ProjectTaskCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        project = Project.objects.filter(pk=pk).first()
+        project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
         serializer = TaskCreateSerializer(data=request.data)
@@ -314,7 +394,11 @@ class ProjectTaskCreateView(APIView):
                 assignee_group_id=validated.get("group"),
                 TaskModel=ProjectTask,
                 participant_lookup=_participant_lookup,
+                # IDOR: the assigned group must belong to THIS project.
+                group_lookup=_group_in_project_lookup,
             )
+        except ProjectGroupNotInProjectError as exc:
+            return _error("NOT_FOUND", "Project group not found.", 404)
         except UnauthorizedProjectActionError as exc:
             return _error("UNAUTHORIZED", str(exc), 403)
         except TaskStatusError as exc:
@@ -330,7 +414,9 @@ class TaskStatusUpdateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
-        task = ProjectTask.objects.filter(pk=pk).first()
+        task = ProjectTask.objects.filter(
+            pk=pk, project__in=_visible_projects(request.user)
+        ).first()
         if task is None:
             return _error("NOT_FOUND", "Task not found.", 404)
         serializer = TaskStatusSerializer(data=request.data)
@@ -358,9 +444,15 @@ class ProjectContributionCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        project = Project.objects.filter(pk=pk).first()
+        project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
+        if request.user.role != User.Role.STUDENT:
+            return _error(
+                "UNAUTHORIZED",
+                "Only students may submit contribution evidence.",
+                403,
+            )
         serializer = ContributionCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
@@ -373,6 +465,7 @@ class ProjectContributionCreateView(APIView):
             )
         if not _evidence_lookup(
             project_id=project.pk,
+            student_id=request.user.id,
             evidence_type=validated["evidence_type"],
             evidence_ref=validated["evidence_ref"],
         ):
@@ -416,9 +509,9 @@ class ContributionReviewView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
-        contribution = ProjectContribution.objects.filter(pk=pk).select_related(
-            "project"
-        ).first()
+        contribution = ProjectContribution.objects.filter(
+            pk=pk, project__in=_visible_projects(request.user)
+        ).select_related("project").first()
         if contribution is None:
             return _error("NOT_FOUND", "Contribution not found.", 404)
         serializer = ContributionReviewSerializer(data=request.data)
@@ -462,7 +555,7 @@ class ProjectMilestoneListCreateView(APIView):
         return _success(MilestoneSerializer(milestones, many=True).data)
 
     def post(self, request, pk):
-        project = Project.objects.filter(pk=pk).first()
+        project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
         serializer = MilestoneCreateSerializer(data=request.data)
@@ -498,7 +591,9 @@ class ProjectMilestoneDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def _milestone(self, request, pk):
-        milestone = ProjectMilestone.objects.filter(pk=pk).select_related("project").first()
+        milestone = ProjectMilestone.objects.filter(
+            pk=pk, project__in=_visible_projects(request.user)
+        ).select_related("project").first()
         if milestone is None:
             return None, _error("NOT_FOUND", "Milestone not found.", 404)
         return milestone, None

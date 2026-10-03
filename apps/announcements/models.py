@@ -22,19 +22,21 @@ class Announcement(models.Model):
     body = models.TextField()
     scope = models.CharField(max_length=32, choices=Scope.choices)
     faculty = models.ForeignKey(
-        "academic.Faculty", on_delete=models.CASCADE, null=True, blank=True, related_name="+"
+        "academic.Faculty", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
     )
     department = models.ForeignKey(
-        "academic.Department", on_delete=models.CASCADE, null=True, blank=True, related_name="+"
+        "academic.Department", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
     )
     course = models.ForeignKey(
-        "academic.Course", on_delete=models.CASCADE, null=True, blank=True, related_name="+"
+        "academic.Course", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
     )
     class_session = models.ForeignKey(
-        "academic.ClassSession", on_delete=models.CASCADE, null=True, blank=True, related_name="+"
+        "academic.ClassSession", on_delete=models.PROTECT, null=True, blank=True, related_name="+"
     )
     is_published = models.BooleanField(default=False)
     is_important = models.BooleanField(default=False)
+    is_pinned = models.BooleanField(default=False, db_index=True)
+    is_archived = models.BooleanField(default=False, db_index=True)
     created_by = models.ForeignKey(
         "accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )
@@ -62,3 +64,23 @@ class Announcement(models.Model):
     @class_id.setter
     def class_id(self, value):
         self.class_session_id = value
+
+
+class AnnouncementRead(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    announcement = models.ForeignKey(
+        Announcement, on_delete=models.CASCADE, related_name="reads"
+    )
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="announcement_reads"
+    )
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "announcements_announcement_read"
+        ordering = ["-read_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["announcement", "user"], name="unique_announcement_read"
+            )
+        ]

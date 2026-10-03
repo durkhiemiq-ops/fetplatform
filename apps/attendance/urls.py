@@ -10,12 +10,14 @@ from .views import (
     AttendanceSessionCloseView,
     AttendanceSessionDetailView,
     AttendanceSessionListCreateView,
+    FlexibleAttendanceStartView,
 )
 
 app_name = "attendance"
 
 urlpatterns = [
     path("scan/", AttendanceScanView.as_view(), name="scan"),
+    path("start-flex/", FlexibleAttendanceStartView.as_view(), name="start-flex"),
     path("sessions/", AttendanceSessionListCreateView.as_view(), name="session-list"),
     path("sessions/<uuid:pk>/", AttendanceSessionDetailView.as_view(), name="session-detail"),
     path("sessions/<uuid:pk>/close/", AttendanceSessionCloseView.as_view(), name="session-close"),
@@ -23,5 +25,9 @@ urlpatterns = [
     path("checkpoints/<uuid:pk>/token/", AttendanceCheckpointTokenView.as_view(), name="checkpoint-token"),
     path("records/", AttendanceRecordListView.as_view(), name="record-list"),
     path("records/<uuid:pk>/corrections/", AttendanceCorrectionView.as_view(), name="record-corrections"),
+    path("records/<uuid:pk>/", AttendanceCorrectionView.as_view(), name="record-detail"),
+    path("<uuid:pk>/", AttendanceSessionDetailView.as_view(), name="flat-session-detail"),
+    path("<uuid:pk>/close/", AttendanceSessionCloseView.as_view(), name="flat-session-close"),
+    path("<uuid:pk>/checkpoints/", AttendanceCheckpointSelectView.as_view(), name="flat-session-checkpoints"),
     path("review/", AttendanceReviewView.as_view(), name="review"),
 ]

@@ -9,7 +9,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.academic_access import is_authorized_academic_user
+from django.db.models import Q
+
+from core.academic_access import is_admin_user, is_authorized_academic_user
 
 from .models import Assessment
 from .serializers import (
@@ -37,13 +39,45 @@ def _success(data, http_status=200):
     return Response({"success": True, "data": data}, status=http_status)
 
 
+def _manageable_assessments(user):
+    """Records within the caller's server-assigned academic responsibility."""
+    queryset = Assessment.objects.all()
+    if is_admin_user(user):
+        return queryset
+    if getattr(user, "role", None) != "LECTURER":
+        return queryset.none()
+    return queryset.filter(
+        Q(created_by=user)
+        | Q(class_session__lecturer=user)
+        | Q(course__class_sessions__lecturer=user)
+        | Q(course__offerings__lecturer=user)
+    ).distinct()
+
+
+def _lecturer_manages_context(user, *, course=None, class_session=None):
+    if is_admin_user(user):
+        return True
+    if getattr(user, "role", None) != "LECTURER":
+        return False
+    if class_session is not None and class_session.lecturer_id == user.pk:
+        return True
+    if course is None and class_session is not None:
+        course = class_session.course
+    if course is None:
+        return False
+    return (
+        course.class_sessions.filter(lecturer=user).exists()
+        or course.offerings.filter(lecturer=user).exists()
+    )
+
+
 class AssessmentListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         is_academic = is_authorized_academic_user(request.user)
         if is_academic:
-            queryset = Assessment.objects.all()
+            queryset = _manageable_assessments(request.user)
         else:
             # BR-131: students see only their own released assessments.
             queryset = Assessment.objects.filter(student=request.user, released=True)
@@ -57,6 +91,8 @@ class AssessmentListCreateView(APIView):
         serializer = AssessmentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
+        course = validated.get("course")
+        class_session = validated.get("class_session")
         try:
             # BR-130: the service rejects non-academic creators.
             assessment = create_assessment(
@@ -66,8 +102,11 @@ class AssessmentListCreateView(APIView):
                 score=validated.get("score"),
                 private_notes=validated.get("private_notes", ""),
                 released=validated.get("released", False),
-                course_id=validated.get("course"),
-                class_id=validated.get("class_session"),
+                course_id=getattr(course, "pk", None),
+                class_id=getattr(class_session, "pk", None),
+                scope_authorizer=lambda actor: _lecturer_manages_context(
+                    actor, course=course, class_session=class_session
+                ),
             )
         except UnauthorizedAssessmentActionError as exc:
             return _error("UNAUTHORIZED", str(exc), 403)
@@ -81,7 +120,7 @@ class AssessmentUpdateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, pk):
-        assessment = Assessment.objects.filter(pk=pk).first()
+        assessment = _manageable_assessments(request.user).filter(pk=pk).first()
         if assessment is None:
             return _error("NOT_FOUND", "Assessment not found.", 404)
         serializer = AssessmentUpdateSerializer(data=request.data, partial=True)

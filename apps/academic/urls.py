@@ -8,6 +8,12 @@ urlpatterns = [
     path("faculties/", views.FacultyListView.as_view(), name="faculty-list"),
     path("departments/", views.DepartmentListView.as_view(), name="department-list"),
     path("courses/", views.CourseListView.as_view(), name="course-list"),
+    path("course-offerings/", views.CourseOfferingListCreateView.as_view(), name="offering-list"),
+    path("course-offerings/<uuid:pk>/", views.CourseOfferingDetailView.as_view(), name="offering-detail"),
+    path("students/me/available-courses/", views.StudentAvailableCoursesView.as_view(), name="available-courses"),
+    path("students/me/register/", views.StudentRegistrationView.as_view(), name="student-register"),
+    path("students/me/courses/", views.StudentMyCoursesView.as_view(), name="student-courses"),
+    path("lecturers/me/courses/", views.LecturerMyCoursesView.as_view(), name="lecturer-courses"),
     path("classes/", views.ClassSessionListView.as_view(), name="class-list"),
     path(
         "school-years/",

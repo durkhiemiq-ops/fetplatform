@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import ClassSession, Course, Department, Faculty, SchoolYear, Semester
+from .models import ClassSession, Course, CourseOffering, Department, Faculty, SchoolYear, Semester
 
 
 class FacultySerializer(serializers.ModelSerializer):
@@ -28,7 +28,10 @@ class CourseSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Course
-        fields = ["id", "code", "name", "department", "department_name", "faculty_name"]
+        fields = [
+            "id", "code", "name", "description", "credit_units", "level",
+            "status", "department", "department_name", "faculty_name",
+        ]
 
     def get_department_name(self, obj) -> str | None:
         return obj.department.name if obj.department else None
@@ -82,11 +85,70 @@ class SemesterSerializer(serializers.ModelSerializer):
             "name",
             "start_date",
             "end_date",
+            "registration_deadline",
+            "status",
             "is_current",
         ]
 
     def validate(self, attrs):
         return _validate_dates(attrs, getattr(self, "instance", None))
+
+
+class CourseOfferingSerializer(serializers.ModelSerializer):
+    course_code = serializers.CharField(source="course.code", read_only=True)
+    course_title = serializers.CharField(source="course.name", read_only=True)
+    credit_units = serializers.IntegerField(source="course.credit_units", read_only=True)
+    course_level = serializers.CharField(source="course.level", read_only=True)
+    department_name = serializers.CharField(source="department.name", read_only=True)
+    semester_name = serializers.CharField(source="semester.name", read_only=True)
+    lecturer_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CourseOffering
+        fields = [
+            "id", "course", "course_code", "course_title", "credit_units",
+            "course_level", "semester", "semester_name", "department",
+            "department_name", "lecturer", "lecturer_name", "status",
+            "registration_deadline", "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_lecturer_name(self, obj) -> str:
+        if obj.lecturer is None:
+            return ""
+        return f"{obj.lecturer.first_name} {obj.lecturer.last_name}".strip()
+
+    def validate(self, attrs):
+        unexpected = set(self.initial_data) - set(self.fields)
+        if unexpected:
+            raise serializers.ValidationError(
+                {field: "This field is not permitted." for field in unexpected}
+            )
+        course = attrs.get("course", getattr(self.instance, "course", None))
+        department = attrs.get("department", getattr(self.instance, "department", None))
+        lecturer = attrs.get("lecturer", getattr(self.instance, "lecturer", None))
+        if course and course.department_id and course.department_id != getattr(department, "id", None):
+            raise serializers.ValidationError({"department": "Must match the course department."})
+        if lecturer and lecturer.role != "LECTURER":
+            raise serializers.ValidationError({"lecturer": "Must identify a lecturer."})
+        return attrs
+
+
+class StudentRegistrationSerializer(serializers.Serializer):
+    offering_ids = serializers.ListField(
+        child=serializers.UUIDField(), allow_empty=False, max_length=30
+    )
+
+    def validate(self, attrs):
+        unexpected = set(self.initial_data) - {"offering_ids"}
+        if unexpected:
+            raise serializers.ValidationError(
+                {field: "This field is not permitted." for field in unexpected}
+            )
+        ids = attrs["offering_ids"]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError({"offering_ids": "Duplicate offerings are not permitted."})
+        return attrs
 
 
 class EnrollmentCreateSerializer(serializers.Serializer):

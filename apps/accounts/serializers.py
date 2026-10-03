@@ -120,6 +120,7 @@ class UserSerializer(serializers.ModelSerializer):
             "role",
             "faculty",
             "department",
+            "level",
             "created_at",
             "is_email_verified",
         ]
@@ -134,6 +135,7 @@ class UserSerializer(serializers.ModelSerializer):
             "role",  # BR-002/BR-210, admin-only via change-role
             "faculty",
             "department",
+            "level",
             "is_email_verified",
             "created_at",
         ]

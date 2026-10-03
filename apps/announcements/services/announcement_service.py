@@ -16,6 +16,9 @@ from __future__ import annotations
 
 from typing import Any, Iterable, List, Optional, Sequence, Protocol
 
+from django.db import transaction
+from django.db.models import Q
+
 from core.academic_access import (
     SCOPE_CLASS,
     SCOPE_COURSE,
@@ -84,6 +87,7 @@ def create_announcement(
     user_course_ids: Optional[Iterable[Any]] = None,
     user_class_ids: Optional[Iterable[Any]] = None,
     user_roles: Optional[Sequence[str]] = None,
+    scope_exists: Optional[Any] = None,
 ) -> AnnouncementModelLike:
     """Create a scoped announcement with authorization checks.
 
@@ -118,6 +122,8 @@ def create_announcement(
         )
     if scope_id is None:
         raise InvalidAnnouncementScopeError("Announcement scope id is required")
+    if scope_exists is not None and not scope_exists(normalized_scope, scope_id):
+        raise InvalidAnnouncementScopeError("Announcement scope target is unavailable")
 
     announcement = AnnouncementModel()
     announcement.title = title
@@ -134,6 +140,13 @@ def create_announcement(
         announcement.published_by_id = announcement.created_by_id
         announcement.published_at = utc_now()
     announcement.save()
+    write_audit_entry(
+        action="announcement_created",
+        resource_type="announcement",
+        resource_id=getattr(announcement, "id", None),
+        actor_id=announcement.created_by_id,
+        details={"scope": normalized_scope, "scope_id": str(scope_id), "published": bool(published)},
+    )
     # BR §23 + API §45: publishing fans out one notification per eligible user
     # (active course enrollment for course/class scopes; faculty/department
     # links for those scopes in notification_service._announcement_audience).
@@ -332,34 +345,120 @@ def update_announcement(
     if hasattr(announcement, "updated_at"):
         announcement.updated_at = utc_now()
 
-    if getattr(announcement, "is_published", False):
-        # BR-084: every edit to a published announcement is auditable, not only
-        # edits marked important.
-        audit_details = {
-            "scope": normalized_scope,
-            "scope_id": scope_id,
-            "title": announcement.title,
-        }
-        if audit_logger is not None:
-            audit_logger(
-                action="announcement_updated",
-                resource_type="announcement",
-                resource_id=getattr(announcement, "id", None),
-                actor_id=actor_id if actor_id is not None else getattr(actor, "id", None),
-                details=audit_details,
-            )
-        else:
-            write_audit_entry(
-                action="announcement_updated",
-                resource_type="announcement",
-                resource_id=getattr(announcement, "id", None),
-                actor_id=actor_id if actor_id is not None else getattr(actor, "id", None),
-                details=audit_details,
-            )
-
     announcement.save()
+    audit_details = {
+        "scope": normalized_scope,
+        "scope_id": scope_id,
+        "title": announcement.title,
+        "published": bool(announcement.is_published),
+    }
+    logger = audit_logger or write_audit_entry
+    logger(
+        action="announcement_updated",
+        resource_type="announcement",
+        resource_id=getattr(announcement, "id", None),
+        actor_id=actor_id if actor_id is not None else getattr(actor, "id", None),
+        details=audit_details,
+    )
     # Draft -> published transition fans out notifications exactly once; editing
     # an already-published announcement does not notify again.
     if not was_published and bool(getattr(announcement, "is_published", False)):
         notify_announcement_published(announcement)
     return announcement
+
+
+def can_manage_announcement(user, announcement) -> bool:
+    return bool(
+        user
+        and announcement
+        and (user.role == "ADMINISTRATOR" or announcement.created_by_id == user.id)
+    )
+
+
+def announcement_audience(announcement):
+    """Return the server-derived recipient queryset for receipt counts."""
+    from apps.accounts.models import User
+    from apps.academic.models import Enrollment
+
+    users = User.objects.filter(is_active=True)
+    if announcement.scope == SCOPE_FACULTY and announcement.faculty_id:
+        return users.filter(
+            Q(faculty_id=announcement.faculty_id)
+            | Q(department__faculty_id=announcement.faculty_id)
+        ).distinct()
+    if announcement.scope == SCOPE_DEPARTMENT and announcement.department_id:
+        return users.filter(department_id=announcement.department_id)
+    if announcement.scope == SCOPE_COURSE and announcement.course_id:
+        ids = Enrollment.objects.filter(
+            course_id=announcement.course_id, is_active=True
+        ).values_list("student_id", flat=True)
+        return users.filter(id__in=ids)
+    if announcement.scope in {SCOPE_CLASS, SCOPE_COURSE_CLASS} and announcement.class_session_id:
+        ids = Enrollment.objects.filter(
+            course_id=announcement.class_session.course_id, is_active=True
+        ).values_list("student_id", flat=True)
+        return users.filter(id__in=ids)
+    return users.none()
+
+
+@transaction.atomic
+def set_announcement_pin(*, announcement, actor, pinned):
+    if not can_manage_announcement(actor, announcement):
+        raise UnauthorizedAnnouncementActionError("Only the author or an administrator can pin this announcement")
+    if announcement.is_archived:
+        raise AnnouncementError("Archived announcements cannot be pinned")
+    unpinned_ids = []
+    if pinned:
+        scope_filter = {
+            "scope": announcement.scope,
+            "faculty_id": announcement.faculty_id,
+            "department_id": announcement.department_id,
+            "course_id": announcement.course_id,
+            "class_session_id": announcement.class_session_id,
+            "is_pinned": True,
+        }
+        unpinned_ids = list(
+            announcement.__class__.objects.filter(**scope_filter)
+            .exclude(pk=announcement.pk).values_list("id", flat=True)
+        )
+        announcement.__class__.objects.filter(id__in=unpinned_ids).update(is_pinned=False)
+    announcement.is_pinned = bool(pinned)
+    announcement.save(update_fields=["is_pinned", "updated_at"])
+    write_audit_entry(
+        action="announcement_pinned" if pinned else "announcement_unpinned",
+        resource_type="announcement",
+        resource_id=announcement.id,
+        actor_id=actor.id,
+        details={"automatically_unpinned": [str(item) for item in unpinned_ids]},
+    )
+    return announcement
+
+
+@transaction.atomic
+def archive_announcement(*, announcement, actor):
+    if not can_manage_announcement(actor, announcement):
+        raise UnauthorizedAnnouncementActionError("Only the author or an administrator can archive this announcement")
+    announcement.is_archived = True
+    announcement.is_pinned = False
+    announcement.save(update_fields=["is_archived", "is_pinned", "updated_at"])
+    write_audit_entry(
+        action="announcement_archived",
+        resource_type="announcement",
+        resource_id=announcement.id,
+        actor_id=actor.id,
+        details={},
+    )
+    return announcement
+
+
+def mark_announcement_read(*, announcement, user, ReadModel):
+    record, created = ReadModel.objects.get_or_create(announcement=announcement, user=user)
+    if created:
+        write_audit_entry(
+            action="announcement_read",
+            resource_type="announcement_read",
+            resource_id=record.id,
+            actor_id=user.id,
+            details={"announcement_id": str(announcement.id)},
+        )
+    return record

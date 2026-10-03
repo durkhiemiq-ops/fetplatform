@@ -3,6 +3,12 @@ from django.urls import include, path
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Canonical flat academic surface used by the integrated frontend. The
+    # legacy /academic/ mount remains temporarily for existing clients/tests.
+    path(
+        "api/v1/",
+        include(("apps.academic.urls", "academic_flat"), namespace="academic-flat"),
+    ),
     path("api/v1/accounts/", include("apps.accounts.urls")),
     # Alias for the FET-official client's /api/v1/auth/* paths. Same views.
     path("api/v1/auth/", include("apps.accounts.auth_alias_urls")),

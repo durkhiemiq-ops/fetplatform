@@ -7,7 +7,8 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
-from apps.academic.models import Course
+from apps.academic.models import ClassSession, Course
+from django.utils import timezone
 from core.models import AuditEvent
 
 from .models import Assessment
@@ -32,6 +33,19 @@ class AssessmentApiTests(TestCase):
             "assess-other@example.test", "assess-other", "Oth", "Er", "StrongPass!2026"
         )
         self.course = Course.objects.create(code="FET101", name="Secure Attendance")
+        self.other_course = Course.objects.create(code="FET102", name="Other Course")
+        self.other_lecturer = User.objects.create_user(
+            "assess-other-lect@example.test", "assess-other-lect", "Other", "Lecturer",
+            "StrongPass!2026", role=User.Role.LECTURER,
+        )
+        ClassSession.objects.create(
+            course=self.course, lecturer=self.lecturer, starts_at=timezone.now()
+        )
+        ClassSession.objects.create(
+            course=self.other_course,
+            lecturer=self.other_lecturer,
+            starts_at=timezone.now(),
+        )
 
     def test_requires_authentication(self):
         response = self.client.get(reverse("assessments:list"))
@@ -52,7 +66,11 @@ class AssessmentApiTests(TestCase):
         self.client.force_authenticate(user=self.lecturer)
         response = self.client.post(
             reverse("assessments:list"),
-            {"student": str(self.student.id), "score": "85.50"},
+            {
+                "student": str(self.student.id),
+                "course": str(self.course.id),
+                "score": "85.50",
+            },
             format="json",
         )
         self.assertEqual(response.status_code, 201)
@@ -63,7 +81,7 @@ class AssessmentApiTests(TestCase):
         # BR-132: creation flows through the shared audit helper.
         self.assertTrue(
             AuditEvent.objects.filter(
-                action="assessment_updated", resource_type="assessment"
+                action="assessment_created", resource_type="assessment"
             ).exists()
         )
 
@@ -84,23 +102,39 @@ class AssessmentApiTests(TestCase):
         self.assertEqual(rows[0]["score"], "80.00")
         self.assertIsNone(rows[0]["private_notes"])
 
-    def test_lecturer_sees_all_with_notes(self):
+    def test_lecturer_sees_only_supervised_course_with_notes(self):
         Assessment.objects.create(
-            student=self.student, released=True, private_notes="hidden"
+            student=self.student,
+            course=self.course,
+            released=True,
+            private_notes="visible to supervisor",
         )
-        Assessment.objects.create(student=self.student, released=False)
-        Assessment.objects.create(student=self.other, released=True)
+        Assessment.objects.create(student=self.student, course=self.course, released=False)
+        Assessment.objects.create(
+            student=self.other,
+            course=self.other_course,
+            released=True,
+            private_notes="foreign private note",
+        )
 
         self.client.force_authenticate(user=self.lecturer)
         response = self.client.get(reverse("assessments:list"))
         self.assertEqual(response.status_code, 200)
         rows = response.data["data"]
-        self.assertEqual(len(rows), 3)
-        self.assertTrue(any(r["private_notes"] == "hidden" for r in rows))
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(
+            any(r["private_notes"] == "visible to supervisor" for r in rows)
+        )
+        self.assertFalse(
+            any(r["private_notes"] == "foreign private note" for r in rows)
+        )
 
     def test_release_requires_academic_actor_and_is_audited(self):
         assessment = Assessment.objects.create(
-            student=self.student, released=False, private_notes="draft notes"
+            student=self.student,
+            course=self.course,
+            released=False,
+            private_notes="draft notes",
         )
         self.client.force_authenticate(user=self.student)
         denied = self.client.patch(
@@ -108,8 +142,8 @@ class AssessmentApiTests(TestCase):
             {"released": True},
             format="json",
         )
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(denied.data["error"]["code"], "UNAUTHORIZED")
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied.data["error"]["code"], "NOT_FOUND")
 
         self.client.force_authenticate(user=self.lecturer)
         before = AuditEvent.objects.filter(

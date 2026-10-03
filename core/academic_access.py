@@ -14,12 +14,12 @@ ROLE_STUDENT = "student"
 ROLE_ADMIN = "admin"
 ROLE_ADMINISTRATOR = "administrator"
 ROLE_LECTURER = "lecturer"
+# Legacy labels remain importable for service compatibility, but they are not
+# valid User.Role values and grant no access by themselves.
 ROLE_ACADEMIC_STAFF = "academic_staff"
 ROLE_STAFF = "staff"
 ADMIN_ROLES = frozenset({ROLE_ADMIN, ROLE_ADMINISTRATOR})
-ACADEMIC_ROLES = frozenset(
-    {ROLE_ADMIN, ROLE_ADMINISTRATOR, ROLE_LECTURER, ROLE_ACADEMIC_STAFF, ROLE_STAFF}
-)
+ACADEMIC_ROLES = frozenset({ROLE_ADMIN, ROLE_ADMINISTRATOR, ROLE_LECTURER})
 
 SCOPE_FACULTY = "faculty"
 SCOPE_DEPARTMENT = "department"
@@ -56,10 +56,6 @@ def is_authorized_academic_user(user: Any) -> bool:
     role = normalize_role(getattr(user, "role", None))
     if role in ACADEMIC_ROLES:
         return True
-    if getattr(user, "is_staff", False):
-        return True
-    if getattr(user, "is_lecturer", False):
-        return True
     return False
 
 
@@ -67,9 +63,7 @@ def is_admin_user(user: Any) -> bool:
     """Return whether a user has a server-side administrator role."""
     if user is None:
         return False
-    return normalize_role(getattr(user, "role", None)) in ADMIN_ROLES or bool(
-        getattr(user, "is_staff", False)
-    )
+    return normalize_role(getattr(user, "role", None)) in ADMIN_ROLES
 
 
 def normalize_scope(scope: Optional[str], *, allowed_scopes: Optional[set[str]] = None) -> str:
@@ -139,8 +133,6 @@ def user_has_scope_access(
 
     roles = {str(role).strip().lower() for role in (user_roles or [])}
     roles.add(normalize_role(getattr(user, "role", None)))
-    if getattr(user, "is_staff", False):
-        roles.add("staff")
     if "admin" in roles or "administrator" in roles:
         return True
 

@@ -192,10 +192,14 @@ class TaskCreateSerializer(serializers.Serializer):
     )
     group = serializers.UUIDField(required=False, allow_null=True, default=None)
 
-    def validate_group(self, value):
-        if value is not None and not ProjectGroup.objects.filter(pk=value).exists():
-            raise serializers.ValidationError("Group does not exist.")
-        return value
+    # NOTE: there is deliberately no `validate_group` existence probe here.
+    # It used to be `ProjectGroup.objects.filter(pk=value).exists()` -- a
+    # system-wide existence check that could not know which project the task
+    # belonged to, because the project id is not in the payload. It therefore
+    # accepted a group owned by an unrelated project (IDOR). Ownership is
+    # now enforced project-scoped in the service, which does receive the
+    # project, and it raises a 403 for both "no such group" and "group owned
+    # by another project" so this endpoint is not a group-id oracle.
 
 
 class TaskStatusSerializer(serializers.Serializer):

@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from apps.academic.models import ClassSession, Course
 from apps.accounts.models import User
 
 from .models import Assessment
@@ -42,14 +43,33 @@ class AssessmentSerializer(serializers.ModelSerializer):
 class AssessmentCreateSerializer(serializers.Serializer):
     """Create payload for create_assessment (BR-130 authorization in service)."""
 
-    student = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
+    student = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(role=User.Role.STUDENT)
+    )
     score = serializers.DecimalField(
         max_digits=7, decimal_places=2, required=False, allow_null=True, default=None
     )
     private_notes = serializers.CharField(required=False, allow_blank=True, default="")
     released = serializers.BooleanField(default=False, required=False)
-    course = serializers.UUIDField(required=False, allow_null=True, default=None)
-    class_session = serializers.UUIDField(required=False, allow_null=True, default=None)
+    course = serializers.PrimaryKeyRelatedField(
+        queryset=Course.objects.all(), required=False, allow_null=True, default=None
+    )
+    class_session = serializers.PrimaryKeyRelatedField(
+        queryset=ClassSession.objects.all(),
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+
+    def validate(self, attrs):
+        course = attrs.get("course")
+        class_session = attrs.get("class_session")
+        if course is not None and class_session is not None:
+            if class_session.course_id != course.pk:
+                raise serializers.ValidationError(
+                    "class_session must belong to the selected course."
+                )
+        return attrs
 
     def validate_score(self, value):
         if value is not None and value < Decimal("0"):

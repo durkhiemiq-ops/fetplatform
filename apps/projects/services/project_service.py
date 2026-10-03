@@ -41,6 +41,21 @@ class ProjectMembershipError(ProjectError):
     """Raised when a membership rule is violated."""
 
 
+class ProjectGroupNotInProjectError(ProjectMembershipError):
+    """Raised when a group id does not belong to the project being modified.
+
+    Security (IDOR). A client-supplied ``group`` id used to be validated with a
+    bare ``ProjectGroup.objects.filter(pk=group_id).exists()`` — i.e. "does this
+    group exist anywhere in the system" rather than "does it belong to *this*
+    project". A manager of project A could therefore write a row whose
+    ``project_id`` is A while ``group_id`` points at a group owned by project B.
+
+    §25: a group that does not exist and a group owned by another project both
+    raise this same exception, so the response is identical and the endpoint
+    cannot be used to discover which group ids exist elsewhere in the platform.
+    """
+
+
 class DuplicateGroupMembershipError(ProjectMembershipError):
     """Raised when a student is added to the same group twice."""
 
@@ -189,11 +204,47 @@ def create_project(
         project.title = title
     if hasattr(project, "is_active"):
         project.is_active = status == "active"
-    for key, value in kwargs.items():
-        if hasattr(project, key):
-            setattr(project, key, value)
+    # Callers may supply only provenance. Never turn arbitrary keyword input
+    # into model attribute writes.
+    if "created_by_id" in kwargs and hasattr(project, "created_by_id"):
+        project.created_by_id = kwargs["created_by_id"]
     project.save()
+    write_audit_entry(
+        action="project_created",
+        resource_type="project",
+        resource_id=project.id,
+        actor_id=kwargs.get("created_by_id", owner_id),
+        details={"title": title, "status": status},
+    )
     return project
+
+
+def _assert_group_in_project(
+    *, group_id: Any, project_id: Any, group_lookup: Optional[Any], error: type
+) -> None:
+    """BR-102/170 + IDOR: a group id must belong to the project being modified.
+
+    ``group_lookup(project_id, group_id)`` must return truthy only when that
+    group exists *and* belongs to ``project_id``. The check lives here, in the
+    service, rather than in the view or serializer, so it cannot be bypassed by
+    calling the service directly and so every caller gets it for free.
+
+    Absent ``group_lookup`` the check fails closed rather than being skipped.
+    """
+    if group_id is None:
+        return
+    if group_lookup is None:
+        raise error(
+            "A project-scoped group lookup is required to assign a group"
+        )
+    try:
+        in_project = group_lookup(project_id=project_id, group_id=group_id)
+    except TypeError:
+        in_project = group_lookup(project_id, group_id)
+    if not bool(in_project):
+        # Deliberately identical for "no such group" and "group belongs to
+        # another project" — see ProjectGroupNotInProjectError.
+        raise error("Group does not belong to this project")
 
 
 def add_project_member(
@@ -206,6 +257,7 @@ def add_project_member(
     GroupMembershipModel: Optional[type[ProjectGroupLike]] = None,
     is_explicit_assignment: bool = True,
     actor_authorizer: Optional[Any] = None,
+    group_lookup: Optional[Any] = None,
 ) -> Any:
     """Assign a student to a project or group when authorized and valid."""
     # BR-101, BR-102: eligibility and explicit assignment are required; a student
@@ -220,6 +272,14 @@ def add_project_member(
         raise UnauthorizedProjectActionError("A project membership authorization check is required")
     if not bool(actor_authorizer(actor_id=actor_id, project=project)):
         raise UnauthorizedProjectActionError("Actor is not authorized to manage project membership")
+
+    # IDOR: the group must belong to THIS project. Checked before any write.
+    _assert_group_in_project(
+        group_id=group_id,
+        project_id=project_id,
+        group_lookup=group_lookup,
+        error=ProjectGroupNotInProjectError,
+    )
 
     if GroupMembershipModel is not None:
         # BR-101/102: a student occupies a project at most once, whether or
@@ -244,7 +304,48 @@ def add_project_member(
         record.status = "active"
     if hasattr(record, "save"):
         record.save()
+    write_audit_entry(
+        action="project_member_added",
+        resource_type="project_membership",
+        resource_id=getattr(record, "id", None),
+        actor_id=actor_id,
+        details={
+            "project_id": project_id,
+            "student_id": student_id,
+            "group_id": group_id,
+        },
+    )
     return record
+
+
+def remove_project_member(
+    *, membership: Any, actor_id: Any, actor_authorizer: Any
+) -> None:
+    """Remove one project-scoped membership after server-side authorization."""
+    if membership is None:
+        raise ProjectNotFoundError("Project membership not found")
+    project = getattr(membership, "project", None)
+    _assert_project_modifiable(project, actor_id)
+    if actor_authorizer is None or not bool(
+        actor_authorizer(actor_id=actor_id, project=project)
+    ):
+        raise UnauthorizedProjectActionError(
+            "Actor is not authorized to manage project membership"
+        )
+    membership_id = getattr(membership, "id", None)
+    details = {
+        "project_id": getattr(membership, "project_id", None),
+        "student_id": getattr(membership, "student_id", None),
+        "group_id": getattr(membership, "group_id", None),
+    }
+    membership.delete()
+    write_audit_entry(
+        action="project_member_removed",
+        resource_type="project_membership",
+        resource_id=membership_id,
+        actor_id=actor_id,
+        details=details,
+    )
 
 
 def assign_group_leader(
@@ -317,6 +418,14 @@ def advance_project_status(
     if hasattr(project, "archived_at") and new_status == "archived":
         project.archived_at = utc_now()
     project.save()
+    write_audit_entry(
+        action="project_status_changed",
+        resource_type="project",
+        resource_id=getattr(project, "id", None),
+        actor_id=actor_id,
+        old_value={"status": current_status},
+        new_value={"status": new_status},
+    )
     return project
 
 
@@ -331,6 +440,7 @@ def create_task(
     assignee_group_id: Optional[Any] = None,
     TaskModel: Optional[type[ProjectTaskLike]] = None,
     participant_lookup: Optional[Any] = None,
+    group_lookup: Optional[Any] = None,
 ) -> ProjectTaskLike:
     """Create a project task that belongs to a valid project and valid status."""
     # BR-110, BR-111, BR-112: every task belongs to a valid project and uses an
@@ -345,6 +455,13 @@ def create_task(
     if not title or not str(title).strip():
         raise TaskError("Task title is required")
     _assert_valid_task_status(status)
+    # IDOR: a task may only be assigned to a group belonging to THIS project.
+    _assert_group_in_project(
+        group_id=assignee_group_id,
+        project_id=project_id,
+        group_lookup=group_lookup,
+        error=ProjectGroupNotInProjectError,
+    )
     if assignee_id is not None or assignee_group_id is not None:
         # BR-111, BR-170: assignments must target authorized project
         # participants or groups.
@@ -375,6 +492,17 @@ def create_task(
     if hasattr(task, "created_by_id"):
         task.created_by_id = actor_id
     task.save()
+    write_audit_entry(
+        action="project_task_created",
+        resource_type="project_task",
+        resource_id=getattr(task, "id", None),
+        actor_id=actor_id,
+        details={
+            "project_id": project_id,
+            "assignee_id": assignee_id,
+            "group_id": assignee_group_id,
+        },
+    )
     return task
 
 
@@ -400,13 +528,29 @@ def update_task_status(
     if is_authorized is None:
         is_authorized = _default_task_authorized
 
+    if getattr(task, "is_official", False) and actor_id != getattr(
+        task, "created_by_id", None
+    ):
+        raise UnauthorizedProjectActionError(
+            "Official task status remains lecturer-controlled"
+        )
+
     if not bool(is_authorized(actor_id, task)):
         raise UnauthorizedProjectActionError("Actor is not authorized to update this task")
 
+    old_status = getattr(task, "status", None)
     task.status = new_status
     if hasattr(task, "updated_by_id"):
         task.updated_by_id = actor_id
     task.save()
+    write_audit_entry(
+        action="project_task_status_changed",
+        resource_type="project_task",
+        resource_id=getattr(task, "id", None),
+        actor_id=actor_id,
+        old_value={"status": old_status},
+        new_value={"status": new_status},
+    )
     return task
 
 
@@ -487,6 +631,18 @@ def record_contribution(
     if hasattr(contribution, "created_at"):
         contribution.created_at = utc_now()
     contribution.save()
+    write_audit_entry(
+        action="project_contribution_recorded",
+        resource_type="contribution",
+        resource_id=getattr(contribution, "id", None),
+        actor_id=actor_id,
+        details={
+            "project_id": project_id,
+            "student_id": student_id,
+            "evidence_type": evidence_type,
+            "evidence_ref": evidence_ref,
+        },
+    )
     return contribution
 
 

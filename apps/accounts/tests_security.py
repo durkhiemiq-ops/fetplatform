@@ -26,7 +26,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework import status
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory
 
 from apps.accounts.models import User
 from apps.accounts.views import LoginView, RegisterView
@@ -45,6 +45,7 @@ class SecurityAuditChecks(TestCase):
         # login/register rate budgets.
         cache.clear()
         self.client = APIClient()
+        self.request_factory = APIRequestFactory()
         self.valid_payload = {
             "email": "person@example.test",
             "username": "person",
@@ -52,6 +53,10 @@ class SecurityAuditChecks(TestCase):
             "last_name": "Son",
             "password": "StrongPass!2026",
         }
+
+    def _provision(self, payload):
+        request = self.request_factory.post("/internal/provision/", payload, format="json")
+        return RegisterView.as_view()(request)
 
     def test_check_1_throttle_classes_configured_on_login_and_register(self):
         """Check 1: ScopedRateThrottle wired so the configured rates apply."""
@@ -87,20 +92,16 @@ class SecurityAuditChecks(TestCase):
     def test_check_2_duplicate_email_is_indistinguishable_from_validation_error(self):
         """Check 2: duplicate email → same 400 status / envelope / code as a
         generic validation failure, so registered emails cannot be enumerated."""
-        first = self.client.post(reverse("accounts:register"), self.valid_payload, format="json")
+        first = self._provision(self.valid_payload)
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)
 
         duplicate_payload = dict(self.valid_payload, username="different-person")
-        duplicate = self.client.post(
-            reverse("accounts:register"), duplicate_payload, format="json"
-        )
+        duplicate = self._provision(duplicate_payload)
 
         malformed_payload = dict(
             self.valid_payload, email="another@example.test", password="short"
         )
-        malformed = self.client.post(
-            reverse("accounts:register"), malformed_payload, format="json"
-        )
+        malformed = self._provision(malformed_payload)
 
         self.assertEqual(duplicate.status_code, malformed.status_code)
         self.assertEqual(duplicate.status_code, status.HTTP_400_BAD_REQUEST)
@@ -115,23 +116,21 @@ class SecurityAuditChecks(TestCase):
     def test_check_5_username_is_lowercased_on_save(self):
         """Check 5: mixed-case username is stored lowercase, matching email."""
         payload = dict(self.valid_payload, username="Mixed.Case.Name")
-        response = self.client.post(reverse("accounts:register"), payload, format="json")
+        response = self._provision(payload)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         created = User.objects.get(email=self.valid_payload["email"])
         self.assertEqual(created.username, "mixed.case.name")
 
     def test_check_5_username_uniqueness_check_is_case_insensitive(self):
         """Check 5: a same-username-different-case registration is rejected."""
-        self.client.post(reverse("accounts:register"), self.valid_payload, format="json")
+        self._provision(self.valid_payload)
 
         duplicate_case_payload = dict(
             self.valid_payload,
             email="other@example.test",
             username="PERSON",
         )
-        response = self.client.post(
-            reverse("accounts:register"), duplicate_case_payload, format="json"
-        )
+        response = self._provision(duplicate_case_payload)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data["error"]["code"], "INVALID_DATA")
         self.assertFalse(
@@ -163,6 +162,7 @@ class RegistrationPasswordValidatorChecks(TestCase):
     def setUp(self):
         cache.clear()
         self.client = APIClient()
+        self.request_factory = APIRequestFactory()
         self.payload = {
             "email": "person@example.test",
             "username": "person",
@@ -172,11 +172,12 @@ class RegistrationPasswordValidatorChecks(TestCase):
         }
 
     def _register(self, password, **overrides):
-        return self.client.post(
-            reverse("accounts:register"),
+        request = self.request_factory.post(
+            "/internal/provision/",
             dict(self.payload, password=password, **overrides),
             format="json",
         )
+        return RegisterView.as_view()(request)
 
     def test_check_9_numeric_password_is_rejected(self):
         """NumericPasswordValidator: an all-digit password must not register."""
@@ -220,18 +221,10 @@ class RegistrationPasswordValidatorChecks(TestCase):
         """A weak-password rejection is indistinguishable in shape from the
         duplicate-email response, so password rules cannot be used to probe
         whether an address is registered (BR-203)."""
-        self.client.post(reverse("accounts:register"), self.payload, format="json")
+        self._register(self.payload["password"])
 
-        weak = self.client.post(
-            reverse("accounts:register"),
-            dict(self.payload, username="someone-else", password="12345678"),
-            format="json",
-        )
-        duplicate = self.client.post(
-            reverse("accounts:register"),
-            dict(self.payload, username="someone-else"),
-            format="json",
-        )
+        weak = self._register("12345678", username="someone-else")
+        duplicate = self._register(self.payload["password"], username="someone-else")
         self.assertEqual(weak.status_code, duplicate.status_code)
         self.assertEqual(set(weak.data.keys()), {"success", "error"})
         self.assertEqual(weak.data["error"]["code"], duplicate.data["error"]["code"])

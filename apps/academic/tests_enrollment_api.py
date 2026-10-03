@@ -87,25 +87,35 @@ class EnrollmentApiTests(TestCase):
     # ---------- create ----------
 
     def test_student_enrolls_self(self):
+        """Self-enrollment on the legacy course-level endpoint is refused.
+
+        The bounded offering-based path (``POST /students/me/register/``) is the
+        only self-service enrollment. This endpoint previously authorised a
+        student purely on "is this my own id and am I a STUDENT", with no check
+        on department, level, semester, deadline or course status -- so the
+        whole gate on ``register_student`` was bypassable by calling this
+        route instead with any ``course`` uuid.
+        """
         self.client.force_authenticate(user=self.student)
         response = self.client.post(
             reverse("academic:enrollment-list"),
             {"course": str(self.course.pk)},
             format="json",
         )
-        self.assertEqual(response.status_code, 201)
-        self.assertTrue(
-            Enrollment.objects.filter(student=self.student, course=self.course, is_active=True).exists()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["error"]["code"], "UNAUTHORIZED")
+        self.assertFalse(
+            Enrollment.objects.filter(student=self.student, course=self.course).exists()
         )
-        # BR-210: enrollment changes attendance eligibility — must be audited.
-        self.assertTrue(AuditEvent.objects.filter(action="course_enrolled").exists())
 
     def test_duplicate_enrollment_is_conflict(self):
         Enrollment.objects.create(student=self.student, course=self.course)
-        self.client.force_authenticate(user=self.student)
+        # Admin-mediated: self-service enrollment moved to the bounded
+        # offering path (POST /students/me/register/).
+        self.client.force_authenticate(user=self.admin)
         response = self.client.post(
             reverse("academic:enrollment-list"),
-            {"course": str(self.course.pk)},
+            {"course": str(self.course.pk), "student": str(self.student.pk)},
             format="json",
         )
         self.assertEqual(response.status_code, 409)
@@ -190,10 +200,11 @@ class EnrollmentApiTests(TestCase):
         Enrollment.objects.create(
             student=self.student, course=self.course, is_active=False, status="inactive"
         )
-        self.client.force_authenticate(user=self.student)
+        # Admin-mediated (see _enrollment_authorized).
+        self.client.force_authenticate(user=self.admin)
         response = self.client.post(
             reverse("academic:enrollment-list"),
-            {"course": str(self.course.pk)},
+            {"course": str(self.course.pk), "student": str(self.student.pk)},
             format="json",
         )
         self.assertEqual(response.status_code, 201)

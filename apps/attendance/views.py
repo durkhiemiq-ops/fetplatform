@@ -33,6 +33,7 @@ from apps.attendance.services.attendance_service import (
     scan_attendance,
     select_checkpoints,
     start_attendance_session,
+    start_flexible_attendance_session,
 )
 from apps.attendance.utils.qr_tokens import (
     InvalidTokenError,
@@ -47,6 +48,7 @@ from .serializers import (
     AttendanceSessionCreateSerializer,
     CheckpointSelectSerializer,
     CorrectionCreateSerializer,
+    FlexibleAttendanceStartSerializer,
 )
 
 
@@ -146,6 +148,8 @@ def _serialize_correction(correction):
     return {
         "id": str(correction.id),
         "reason": correction.reason,
+        "old_status": correction.old_status,
+        "new_status": correction.new_status,
         "corrected_by_name": _user_name(correction.corrected_by),
         "created_at": correction.created_at,
     }
@@ -156,9 +160,13 @@ def _serialize_record(record, include_corrections=False):
     # keep the presentation fields plus the correction envelope.
     data = {
         "id": str(record.id),
+        "attendance_session": str(record.attendance_session_id),
+        "student": str(record.student_id),
         "student_name": _user_name(record.student),
+        "student_email": record.student.email,
         "recorded_at": record.recorded_at,
-        "status": "PRESENT",
+        "status": record.status,
+        "verification_method": record.verification_method,
     }
     if include_corrections:
         data["corrections"] = [_serialize_correction(c) for c in record.corrections.all()]
@@ -225,6 +233,44 @@ class AttendanceSessionListCreateView(APIView):
                 # §67: the class_session uuid echoes the request body; the
                 # frontend consumes only identity/status/timing.
                 "id": str(session.id),
+                "status": session.status,
+                "started_at": session.started_at,
+                "expires_at": session.expires_at,
+            },
+            201,
+        )
+
+
+class FlexibleAttendanceStartView(APIView):
+    """Start an attendance window from a server-owned course offering."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not is_authorized_academic_user(request.user):
+            return _error("Only academic users may start attendance sessions.", "UNAUTHORIZED", 403)
+        serializer = FlexibleAttendanceStartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            session = start_flexible_attendance_session(
+                actor=request.user,
+                offering_id=serializer.validated_data["offering_id"],
+                duration_seconds=serializer.validated_data.get("duration_seconds"),
+            )
+        except ClassSessionNotFoundError:
+            return _error("Course offering not found.", "NOT_FOUND", 404)
+        except SessionAlreadyActiveError as exc:
+            return _error(str(exc), "SESSION_ALREADY_ACTIVE", 409)
+        except LecturerNotAuthorizedError:
+            return _error("Course offering not found.", "NOT_FOUND", 404)
+        except AttendanceError as exc:
+            return _error(str(exc), "INVALID_INPUT", 400)
+        return _success(
+            {
+                "id": str(session.id),
+                "class_session": str(session.class_session_id),
+                "course_code": session.class_session.course.code,
+                "class_name": session.class_session.course.name,
                 "status": session.status,
                 "started_at": session.started_at,
                 "expires_at": session.expires_at,
@@ -442,11 +488,11 @@ class AttendanceRecordListView(APIView):
 
 
 class AttendanceCorrectionView(APIView):
-    """BR-042: append a traceable correction; the original record never changes."""
+    """BR-042: change status through an immutable correction event."""
 
     permission_classes = [IsAuthenticated]
 
-    def post(self, request, pk):
+    def _correct(self, request, pk):
         if not is_authorized_academic_user(request.user):
             return _error("Only academic users may correct attendance.", "UNAUTHORIZED", 403)
         record = (
@@ -468,6 +514,7 @@ class AttendanceCorrectionView(APIView):
             correction = correct_attendance(
                 record=record,
                 lecturer=request.user,
+                new_status=serializer.validated_data["status"],
                 reason=serializer.validated_data["reason"],
             )
         except CorrectionAuthorizationError as exc:
@@ -476,7 +523,18 @@ class AttendanceCorrectionView(APIView):
             return _error("Attendance record not found.", "NOT_FOUND", 404)
         except AttendanceError as exc:
             return _error(str(exc), "INVALID_INPUT", 400)
-        return _success(_serialize_correction(correction), 201)
+        return _success(
+            {
+                **_serialize_record(record, include_corrections=True),
+                "correction": _serialize_correction(correction),
+            }
+        )
+
+    def patch(self, request, pk):
+        return self._correct(request, pk)
+
+    def post(self, request, pk):
+        return self._correct(request, pk)
 
 
 class AttendanceReviewView(APIView):

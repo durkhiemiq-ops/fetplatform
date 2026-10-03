@@ -20,10 +20,11 @@ from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory
 
 from apps.accounts.models import User
 from apps.accounts.services import email_otp
+from apps.accounts.views import RegisterView
 from core.models import AuditEvent
 
 
@@ -38,6 +39,7 @@ class EmailOTPFlowTests(TestCase):
         # OTP keys and DRF throttle counters share the default cache.
         cache.clear()
         self.client = APIClient()
+        self.request_factory = APIRequestFactory()
         self.payload = {
             "email": "otp-user@example.test",
             "username": "otp-user",
@@ -47,9 +49,10 @@ class EmailOTPFlowTests(TestCase):
         }
 
     def _register(self, payload=None):
-        return self.client.post(
-            reverse("accounts:register"), payload or self.payload, format="json"
+        request = self.request_factory.post(
+            "/internal/provision/", payload or self.payload, format="json"
         )
+        return RegisterView.as_view()(request)
 
     def _verify(self, email, code):
         return self.client.post(

@@ -1,14 +1,20 @@
 from rest_framework import serializers
 
-from apps.academic.models import ClassSession, Course, Department, Faculty
-
 from .models import Announcement
+from .services.announcement_service import announcement_audience, can_manage_announcement
 
 
 class AnnouncementSerializer(serializers.ModelSerializer):
     """Output shape for the visible-announcements feed."""
 
     scope_label = serializers.SerializerMethodField()
+    creator_name = serializers.SerializerMethodField()
+    audience_label = serializers.SerializerMethodField()
+    is_read = serializers.SerializerMethodField()
+    read_count = serializers.SerializerMethodField()
+    recipient_count = serializers.SerializerMethodField()
+    readers = serializers.SerializerMethodField()
+    can_manage = serializers.SerializerMethodField()
 
     class Meta:
         model = Announcement
@@ -24,8 +30,16 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             "class_session",
             "is_published",
             "is_important",
+            "is_pinned",
             "published_at",
             "created_by",
+            "creator_name",
+            "audience_label",
+            "is_read",
+            "read_count",
+            "recipient_count",
+            "readers",
+            "can_manage",
             "created_at",
         ]
 
@@ -39,6 +53,41 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         if obj.scope in {"class", "course_class"} and obj.class_session_id:
             return f"{obj.class_session.course.code} class"
         return obj.scope
+
+    def get_audience_label(self, obj) -> str:
+        return self.get_scope_label(obj)
+
+    def get_creator_name(self, obj) -> str:
+        if obj.created_by is None:
+            return "Former user"
+        return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or obj.created_by.email
+
+    def get_is_read(self, obj) -> bool:
+        user = self.context.get("request").user if self.context.get("request") else None
+        return bool(user and obj.reads.filter(user=user).exists())
+
+    def get_read_count(self, obj) -> int:
+        return obj.reads.count()
+
+    def get_recipient_count(self, obj) -> int:
+        return announcement_audience(obj).count()
+
+    def get_readers(self, obj) -> list:
+        user = self.context.get("request").user if self.context.get("request") else None
+        if not can_manage_announcement(user, obj):
+            return []
+        return [
+            {
+                "id": str(row.user_id),
+                "full_name": f"{row.user.first_name} {row.user.last_name}".strip(),
+                "read_at": row.read_at,
+            }
+            for row in obj.reads.select_related("user")[:4]
+        ]
+
+    def get_can_manage(self, obj) -> bool:
+        user = self.context.get("request").user if self.context.get("request") else None
+        return can_manage_announcement(user, obj)
 
 
 class AnnouncementCreateSerializer(serializers.Serializer):
@@ -54,18 +103,10 @@ class AnnouncementCreateSerializer(serializers.Serializer):
     published = serializers.BooleanField(default=False, required=False)
 
     def validate(self, attrs):
-        scope_models = {
-            "faculty": Faculty,
-            "department": Department,
-            "course": Course,
-            "class": ClassSession,
-        }
-        model = scope_models.get(attrs["scope"])
-        if model is None:
-            raise serializers.ValidationError({"scope": "Unsupported announcement scope."})
-        if not model.objects.filter(pk=attrs["scope_id"]).exists():
+        unexpected = set(self.initial_data) - set(self.fields)
+        if unexpected:
             raise serializers.ValidationError(
-                {"scope_id": "No target exists for this scope."}
+                {field: "This field is not permitted." for field in unexpected}
             )
         return attrs
 

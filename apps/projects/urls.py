@@ -9,6 +9,12 @@ urlpatterns = [
     path("<uuid:pk>/", views.ProjectDetailView.as_view(), name="detail"),
     path("<uuid:pk>/groups/", views.ProjectGroupCreateView.as_view(), name="group-create"),
     path("<uuid:pk>/members/", views.ProjectMemberCreateView.as_view(), name="member-add"),
+    path("<uuid:pk>/candidates/", views.ProjectCandidatesView.as_view(), name="candidates"),
+    path(
+        "<uuid:pk>/groups/<uuid:group_id>/members/<uuid:student_id>/",
+        views.ProjectMemberDeleteView.as_view(),
+        name="member-delete",
+    ),
     path("<uuid:pk>/tasks/", views.ProjectTaskCreateView.as_view(), name="task-create"),
     path(
         "<uuid:pk>/contributions/",

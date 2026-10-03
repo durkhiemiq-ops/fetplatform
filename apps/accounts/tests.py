@@ -1,13 +1,15 @@
 from django.test import TestCase
 from django.urls import reverse
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory
 
 from apps.accounts.models import User
+from apps.accounts.views import RegisterView
 
 
 class AccountsApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        self.request_factory = APIRequestFactory()
         self.student = User.objects.create_user(
             "student@example.test",
             "student",
@@ -24,9 +26,13 @@ class AccountsApiTests(TestCase):
             role=User.Role.ADMINISTRATOR,
         )
 
+    def _provision(self, payload):
+        """Exercise the institution provisioning handler without a public URL."""
+        request = self.request_factory.post("/internal/provision/", payload, format="json")
+        return RegisterView.as_view()(request)
+
     def test_registration_defaults_to_student_and_rejects_duplicate_email(self):
-        response = self.client.post(
-            reverse("accounts:register"),
+        response = self._provision(
             {
                 "email": "new@example.test",
                 "username": "new-user",
@@ -34,14 +40,12 @@ class AccountsApiTests(TestCase):
                 "last_name": "User",
                 "password": "StrongPass!2026",
             },
-            format="json",
         )
 
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data["data"]["role"], User.Role.STUDENT)
 
-        duplicate = self.client.post(
-            reverse("accounts:register"),
+        duplicate = self._provision(
             {
                 "email": "new@example.test",
                 "username": "another-user",
@@ -49,7 +53,6 @@ class AccountsApiTests(TestCase):
                 "last_name": "User",
                 "password": "StrongPass!2026",
             },
-            format="json",
         )
         # BR-203: duplicate-email failure is indistinguishable from a generic
         # validation failure — same 400 status, same envelope, same code.
@@ -58,8 +61,7 @@ class AccountsApiTests(TestCase):
 
     def test_duplicate_email_is_indistinguishable_from_validation_failure(self):
         # Valid registration payload -> account created.
-        first = self.client.post(
-            reverse("accounts:register"),
+        first = self._provision(
             {
                 "email": "taken@example.test",
                 "username": "taken-user",
@@ -67,13 +69,11 @@ class AccountsApiTests(TestCase):
                 "last_name": "N",
                 "password": "StrongPass!2026",
             },
-            format="json",
         )
         self.assertEqual(first.status_code, 201)
 
         # Duplicate email on an otherwise-valid payload.
-        duplicate = self.client.post(
-            reverse("accounts:register"),
+        duplicate = self._provision(
             {
                 "email": "taken@example.test",
                 "username": "someone-else",
@@ -81,11 +81,9 @@ class AccountsApiTests(TestCase):
                 "last_name": "Else",
                 "password": "StrongPass!2026",
             },
-            format="json",
         )
         # Plain validation failure (short password) on the same endpoint.
-        malformed = self.client.post(
-            reverse("accounts:register"),
+        malformed = self._provision(
             {
                 "email": "unused@example.test",
                 "username": "fresh-user",
@@ -93,7 +91,6 @@ class AccountsApiTests(TestCase):
                 "last_name": "User",
                 "password": "short",
             },
-            format="json",
         )
 
         # Same status, same envelope keys, same error code — an observer

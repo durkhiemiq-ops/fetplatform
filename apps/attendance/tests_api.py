@@ -366,28 +366,43 @@ class AttendanceLifecycleApiTests(TestCase):
 
         response = self.auth(self.lecturer).post(
             reverse("attendance:record-corrections", args=[record.id]),
-            {"reason": "Student was present but scanned late."},
+            {"status": "LATE", "reason": "Student was present but scanned late."},
             format="json",
         )
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 200)
         self.assertTrue(
             AuditEvent.objects.filter(
                 action="attendance_corrected", resource_id=str(record.id)
             ).exists()
         )
-        # The original record is preserved, never replaced.
+        # The original record is preserved, never replaced -- the correction is
+        # an append-only event that also moves the record's status (BR-042).
         self.assertEqual(AttendanceRecord.objects.filter(id=record.id).count(), 1)
+        record.refresh_from_db()
+        self.assertEqual(record.status, AttendanceRecord.Status.LATE)
+        correction = AttendanceCorrection.objects.get(attendance_record=record)
+        self.assertEqual(correction.old_status, AttendanceRecord.Status.PRESENT)
+        self.assertEqual(correction.new_status, AttendanceRecord.Status.LATE)
+
+        # A correction must actually change something: correcting to the status
+        # the record already holds is rejected.
+        no_op = self.auth(self.lecturer).post(
+            reverse("attendance:record-corrections", args=[record.id]),
+            {"status": "LATE", "reason": "Already late."},
+            format="json",
+        )
+        self.assertEqual(no_op.status_code, 400)
 
         no_reason = self.auth(self.lecturer).post(
             reverse("attendance:record-corrections", args=[record.id]),
-            {"reason": ""},
+            {"status": "PRESENT", "reason": ""},
             format="json",
         )
         self.assertEqual(no_reason.status_code, 400)
 
         other = self.auth(self.other_lecturer).post(
             reverse("attendance:record-corrections", args=[record.id]),
-            {"reason": "not mine"},
+            {"status": "ABSENT", "reason": "not mine"},
             format="json",
         )
         # §25: a non-owner sees exactly the missing-record shape, no matter how
@@ -400,7 +415,7 @@ class AttendanceLifecycleApiTests(TestCase):
         # reveal existence, and the audit trail must not be touched.
         other_probe = self.auth(self.other_lecturer).post(
             reverse("attendance:record-corrections", args=[record.id]),
-            {"reason": "Student was present but scanned late."},
+            {"status": "ABSENT", "reason": "Student was present but scanned late."},
             format="json",
         )
         self.assertEqual(other_probe.status_code, 404)
@@ -427,18 +442,28 @@ class AttendanceLifecycleApiTests(TestCase):
 
         response = self.auth(self.admin).post(
             reverse("attendance:record-corrections", args=[record.id]),
-            {"reason": "Administrative correction per BR-042."},
+            {"status": "EXCUSED", "reason": "Administrative correction per BR-042."},
             format="json",
         )
-        self.assertEqual(response.status_code, 201)
-        correction_id = response.data["data"]["id"]
+        self.assertEqual(response.status_code, 200)
+        correction = response.data["data"]["correction"]
+        correction_id = correction["id"]
         # §67: the correction payload is exactly the audit envelope — the
         # internal corrector uuid is not exposed; the human name is.
         self.assertEqual(
-            set(response.data["data"].keys()),
-            {"id", "reason", "corrected_by_name", "created_at"},
+            set(correction.keys()),
+            {
+                "id",
+                "reason",
+                "old_status",
+                "new_status",
+                "corrected_by_name",
+                "created_at",
+            },
         )
-        self.assertEqual(response.data["data"]["corrected_by_name"], "Ad Min")
+        self.assertEqual(correction["old_status"], AttendanceRecord.Status.PRESENT)
+        self.assertEqual(correction["new_status"], AttendanceRecord.Status.EXCUSED)
+        self.assertEqual(correction["corrected_by_name"], "Ad Min")
         self.assertTrue(
             AuditEvent.objects.filter(
                 action="attendance_corrected",

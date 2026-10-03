@@ -1,10 +1,9 @@
-"""Compatibility adapter: ``/api/v1/auth/*`` -> the canonical ``accounts`` views.
+"""Compatibility adapter: ``/api/v1/auth/*`` -> canonical account views.
 
-The FET-official frontend (``src/lib/auth.js``) addresses authentication as
-``/auth/login/``, ``/auth/me/``, ``/auth/self-register/`` and friends, while this
-backend has always exposed those same views under ``/api/v1/accounts/``. Rather
-than fork the views or rename the public API, these routes re-point the
-frontend's paths at the existing ones.
+The integrated frontend addresses session authentication below ``/auth/``.
+Account creation is deliberately absent: institution roster workflows create
+accounts and assign institutional identity; anonymous callers cannot create an
+account or choose an identity through a compatibility alias.
 
 This module deliberately contains **no business logic**. Every route delegates
 to the view that already owns the behaviour, so authorization, audit logging
@@ -100,8 +99,6 @@ urlpatterns = [
     path("login/", views.LoginView.as_view(), name="auth-login"),
     path("logout/", views.LogoutView.as_view(), name="auth-logout"),
     path("me/", views.CurrentUserView.as_view(), name="auth-me"),
-    path("register/", views.RegisterView.as_view(), name="auth-register"),
-    path("self-register/", views.RegisterView.as_view(), name="auth-self-register"),
     path("verify-email/", views.VerifyEmailView.as_view(), name="auth-verify-email"),
     path("change-password/", ChangePasswordView.as_view(), name="auth-change-password"),
     path("refresh/", SessionRefreshView.as_view(), name="auth-refresh"),

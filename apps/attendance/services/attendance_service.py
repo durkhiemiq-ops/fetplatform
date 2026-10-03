@@ -9,7 +9,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from apps.academic.models import ClassSession, Enrollment
+from apps.academic.models import ClassSession, CourseOffering, Enrollment
 from apps.academic.services.eligibility_service import is_student_eligible_for_class
 from apps.accounts.models import User
 from apps.attendance.models import (
@@ -201,7 +201,9 @@ def scan_attendance(*, authenticated_student: User, token: str) -> AttendanceRec
     return record
 
 
-def correct_attendance(*, record: AttendanceRecord, lecturer: User, reason: str) -> AttendanceCorrection:
+def correct_attendance(
+    *, record: AttendanceRecord, lecturer: User, new_status: str, reason: str
+) -> AttendanceCorrection:
     """Append a correction event; never silently overwrite original attendance.
 
     Default correction policy (BR-042 permits "an authorized lecturer or
@@ -218,21 +220,70 @@ def correct_attendance(*, record: AttendanceRecord, lecturer: User, reason: str)
         )
     if not reason or not reason.strip():
         raise CorrectionAuthorizationError("A correction reason is required")
+    valid_statuses = {value for value, _ in AttendanceRecord.Status.choices}
+    if new_status not in valid_statuses:
+        raise AttendanceError("Invalid attendance status")
+    old_status = record.status
+    if new_status == old_status:
+        raise AttendanceError("The corrected status must differ from the current status")
     with transaction.atomic():
+        record.status = new_status
+        record.save(update_fields=["status"])
         correction = AttendanceCorrection.objects.create(
-            attendance_record=record, corrected_by=lecturer, reason=reason.strip()
+            attendance_record=record,
+            corrected_by=lecturer,
+            old_status=old_status,
+            new_status=new_status,
+            reason=reason.strip(),
         )
         write_audit_entry(
             action="attendance_corrected",
             resource_type="attendance_record",
             resource_id=record.id,
             actor_id=lecturer.id,
+            old_value={"status": old_status},
+            new_value={"status": new_status},
             details={"correction_id": correction.id, "reason": correction.reason},
         )
     # BR §23 + API §45: the record's student is eligible to see the correction
     # on their own attendance (recipient is the record owner, not the reviewer).
     notify_attendance_corrected(record=record, correction=correction)
     return correction
+
+
+@transaction.atomic
+def start_flexible_attendance_session(
+    *, actor: User, offering_id: Any, duration_seconds: Optional[int] = None
+) -> AttendanceSession:
+    """Open an unscheduled class occurrence for one assigned course offering."""
+    offerings = CourseOffering.objects.select_for_update().select_related("course")
+    if not is_admin_user(actor):
+        offerings = offerings.filter(lecturer=actor)
+    try:
+        offering = offerings.get(pk=offering_id, status="ACTIVE")
+    except (CourseOffering.DoesNotExist, ValueError, TypeError):
+        raise ClassSessionNotFoundError("Course offering does not exist")
+
+    if AttendanceSession.objects.filter(
+        lecturer=actor,
+        class_session__course=offering.course,
+        status=AttendanceSession.Status.ACTIVE,
+        expires_at__gt=timezone.now(),
+    ).exists():
+        raise SessionAlreadyActiveError(
+            "An active attendance session already exists for this course"
+        )
+
+    class_session = ClassSession.objects.create(
+        course=offering.course,
+        lecturer=offering.lecturer or actor,
+        starts_at=timezone.now(),
+    )
+    return start_attendance_session(
+        actor=actor,
+        class_session_id=class_session.pk,
+        duration_seconds=duration_seconds,
+    )
 
 
 def flag_suspicious_activity(*, actor_id: Any, reason: str, metadata: Optional[dict[str, Any]] = None) -> None:

@@ -9,7 +9,7 @@ from apps.accounts.models import User
 from apps.academic.models import Course, Department, Enrollment, Faculty
 from core.models import AuditEvent
 
-from .models import Announcement
+from .models import Announcement, AnnouncementRead
 
 
 class AnnouncementApiTests(TestCase):
@@ -136,8 +136,8 @@ class AnnouncementApiTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["error"]["code"], "UNAUTHORIZED")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["error"]["code"], "NOT_FOUND")
 
     def test_unknown_scope_target_rejected(self):
         self.client.force_authenticate(user=self.lecturer)
@@ -151,7 +151,7 @@ class AnnouncementApiTests(TestCase):
             },
             format="json",
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 404)
 
     def test_published_edit_writes_audit_event(self):
         self.client.force_authenticate(user=self.lecturer)
@@ -169,3 +169,47 @@ class AnnouncementApiTests(TestCase):
                 action="announcement_updated", resource_id=str(target.pk)
             ).exists()
         )
+
+    def test_visible_student_marks_read_idempotently(self):
+        target = Announcement.objects.get(title="Your course")
+        self.client.force_authenticate(user=self.student)
+        first = self.client.post(reverse("announcements:read", args=[target.pk]))
+        second = self.client.post(reverse("announcements:read", args=[target.pk]))
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(
+            AnnouncementRead.objects.filter(announcement=target, user=self.student).count(), 1
+        )
+        state = self.client.get(reverse("announcements:read-state"))
+        self.assertEqual(state.status_code, 200)
+        self.assertEqual(state.data["data"]["unread"], 1)
+
+    def test_foreign_announcement_read_is_not_an_id_oracle(self):
+        target = Announcement.objects.get(title="Other course")
+        self.client.force_authenticate(user=self.student)
+        foreign = self.client.post(reverse("announcements:read", args=[target.pk]))
+        missing = self.client.post(
+            reverse("announcements:read", args=["11111111-1111-1111-1111-111111111111"])
+        )
+        self.assertEqual(foreign.status_code, 404)
+        self.assertEqual(foreign.data, missing.data)
+
+    def test_author_can_pin_and_archive_without_deleting_history(self):
+        target = Announcement.objects.create(
+            title="Managed", body="b", scope="faculty", faculty=self.faculty,
+            is_published=True, created_by=self.lecturer,
+        )
+        self.client.force_authenticate(user=self.lecturer)
+        pinned = self.client.post(
+            reverse("announcements:pin", args=[target.pk]), {"pinned": True}, format="json"
+        )
+        self.assertEqual(pinned.status_code, 200)
+        target.refresh_from_db()
+        self.assertTrue(target.is_pinned)
+        archived = self.client.delete(reverse("announcements:detail", args=[target.pk]))
+        self.assertEqual(archived.status_code, 200)
+        target.refresh_from_db()
+        self.assertTrue(target.is_archived)
+        self.assertFalse(target.is_pinned)
+        self.assertTrue(Announcement.objects.filter(pk=target.pk).exists())
+        self.assertTrue(AuditEvent.objects.filter(action="announcement_archived").exists())

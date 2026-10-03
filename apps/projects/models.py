@@ -91,6 +91,9 @@ class ProjectGroupMembership(models.Model):
         ordering = ["created_at"]
         constraints = [
             models.UniqueConstraint(
+                fields=["project", "student"], name="unique_student_per_project"
+            ),
+            models.UniqueConstraint(
                 fields=["group", "student"], name="unique_student_per_group"
             ),
         ]

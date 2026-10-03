@@ -15,15 +15,20 @@ from core.audit import write_audit_entry
 
 from apps.accounts.models import User
 
-from .models import ClassSession, Course, Department, Enrollment, Faculty, SchoolYear, Semester
+from .models import (
+    ClassSession, Course, CourseOffering, Department, Enrollment, Faculty,
+    SchoolYear, Semester,
+)
 from .serializers import (
     ClassSessionSerializer,
+    CourseOfferingSerializer,
     CourseSerializer,
     DepartmentSerializer,
     EnrollmentCreateSerializer,
     FacultySerializer,
     SchoolYearSerializer,
     SemesterSerializer,
+    StudentRegistrationSerializer,
 )
 from .services.enrollment_service import (
     AlreadyEnrolledError,
@@ -33,6 +38,11 @@ from .services.enrollment_service import (
     StudentNotFoundError,
     drop_student_from_course,
     enroll_student_in_course,
+)
+from .services.registration_service import (
+    RegistrationError,
+    eligible_offerings,
+    register_student,
 )
 
 
@@ -135,14 +145,199 @@ class SemesterUpdateView(APIView):
         return _success_response(SemesterSerializer(semester).data)
 
 
+def _offering_queryset_for(user):
+    rows = CourseOffering.objects.select_related(
+        "course", "department", "semester", "lecturer"
+    )
+    if is_admin_user(user):
+        return rows
+    if user.role == User.Role.LECTURER:
+        return rows.filter(lecturer=user)
+    return rows.filter(enrollments__student=user, enrollments__is_active=True).distinct()
+
+
+class CourseOfferingListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return _success_response(
+            CourseOfferingSerializer(_offering_queryset_for(request.user), many=True).data
+        )
+
+    def post(self, request):
+        if not is_admin_user(request.user):
+            return _error_response("FORBIDDEN", "Only administrators create offerings.", 403)
+        serializer = CourseOfferingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        offering = serializer.save()
+        write_audit_entry(
+            action="course_offering_created",
+            resource_type="course_offering",
+            resource_id=offering.id,
+            actor_id=request.user.id,
+            details={"course_id": str(offering.course_id), "semester_id": str(offering.semester_id)},
+        )
+        return _success_response(CourseOfferingSerializer(offering).data, 201)
+
+
+class CourseOfferingDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _get(self, request, pk):
+        return _offering_queryset_for(request.user).filter(pk=pk).first()
+
+    def get(self, request, pk):
+        offering = self._get(request, pk)
+        if offering is None:
+            return _error_response("NOT_FOUND", "Course offering not found.", 404)
+        return _success_response(CourseOfferingSerializer(offering).data)
+
+    def patch(self, request, pk):
+        if not is_admin_user(request.user):
+            return _error_response("FORBIDDEN", "Only administrators update offerings.", 403)
+        offering = CourseOffering.objects.filter(pk=pk).first()
+        if offering is None:
+            return _error_response("NOT_FOUND", "Course offering not found.", 404)
+        serializer = CourseOfferingSerializer(offering, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        write_audit_entry(
+            action="course_offering_updated",
+            resource_type="course_offering",
+            resource_id=offering.id,
+            actor_id=request.user.id,
+            details={"changed_fields": sorted(serializer.validated_data)},
+        )
+        return _success_response(CourseOfferingSerializer(offering).data)
+
+
+def _registration_error(exc):
+    return _error_response(exc.code, str(exc), exc.status)
+
+
+def _offering_summary(offering, enrolled_ids):
+    return {
+        "offering_id": str(offering.id),
+        "course_code": offering.course.code,
+        "course_title": offering.course.name,
+        "credit_units": offering.course.credit_units,
+        "lecturer_name": (
+            f"{offering.lecturer.first_name} {offering.lecturer.last_name}".strip()
+            if offering.lecturer else "TBA"
+        ),
+        "is_enrolled": offering.id in enrolled_ids,
+    }
+
+
+class StudentAvailableCoursesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            semester, offerings = eligible_offerings(request.user)
+        except RegistrationError as exc:
+            return _registration_error(exc)
+        enrolled_ids = set(Enrollment.objects.filter(
+            student=request.user,
+            course_offering__semester=semester,
+            is_active=True,
+        ).values_list("course_offering_id", flat=True))
+        return _success_response({
+            "semester": semester.name,
+            "registration_deadline": semester.registration_deadline,
+            "level": request.user.level,
+            "department": request.user.department.name,
+            "courses": [_offering_summary(row, enrolled_ids) for row in offerings],
+        })
+
+
+class StudentRegistrationView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = StudentRegistrationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            records = register_student(
+                student=request.user,
+                offering_ids=serializer.validated_data["offering_ids"],
+            )
+        except RegistrationError as exc:
+            return _registration_error(exc)
+        return _success_response({
+            "registered_count": len(records),
+            "errors": [],
+            "enrollment_ids": [str(record.id) for record in records],
+        }, 201)
+
+
+class StudentMyCoursesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.role != User.Role.STUDENT:
+            return _error_response("FORBIDDEN", "Only students can access this endpoint.", 403)
+        rows = Enrollment.objects.filter(
+            student=request.user,
+            is_active=True,
+            course_offering__isnull=False,
+        ).select_related(
+            "course_offering__course", "course_offering__department",
+            "course_offering__semester", "course_offering__lecturer",
+        )
+        enrolled_ids = {row.course_offering_id for row in rows}
+        return _success_response([
+            {
+                **_offering_summary(row.course_offering, enrolled_ids),
+                "enrollment_id": str(row.id),
+                "department": row.course_offering.department.name,
+                "semester": row.course_offering.semester.name,
+                "materials_count": 0,
+                "announcements_count": 0,
+                "assignments_count": 0,
+            }
+            for row in rows
+        ])
+
+
+class LecturerMyCoursesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.role != User.Role.LECTURER:
+            return _error_response("FORBIDDEN", "Only lecturers can access this endpoint.", 403)
+        rows = CourseOffering.objects.filter(lecturer=request.user).select_related(
+            "course", "department", "semester", "lecturer"
+        )
+        return _success_response(CourseOfferingSerializer(rows, many=True).data)
+
+
 def _enrollment_authorized(*, actor, student_id, action):
-    """BR-010/BR-011/BR-013: a student may manage their own enrollment; an
-    administrator may manage any student's. Lecturers may not — enrollment is
-    not an attendance action."""
+    """BR-010/BR-011/BR-013 authorization for the course-level endpoint.
+
+    Security note — why "enroll" is admin-only here
+    -----------------------------------------------
+    Self-enrollment is permitted, but only through the bounded offering path
+    (``POST /students/me/register/`` -> ``registration_service.register_student``),
+    which enforces department, level, active semester, registration deadline and
+    offering/course status.
+
+    This endpoint previously authorized a student on "is this my own id and am I
+    a STUDENT" alone. Because it takes a bare ``course`` uuid with none of those
+    checks, calling *this* route instead of the offering route granted full
+    attendance eligibility for any course in the system -- and still worked
+    after the registration deadline had passed. A gate is only as strong as the
+    absence of a looser door, so self-service "enroll" no longer lives here.
+
+    Dropping stays self-service: BR-014 lets a student end their own future
+    eligibility, which cannot escalate.
+    """
     if actor is None:
         return False
     if is_admin_user(actor):
         return True
+    if str(action).lower() == "enroll":
+        return False
     return (
         str(getattr(actor, "id", "")) == str(student_id)
         and str(getattr(actor, "role", "")).upper() == "STUDENT"

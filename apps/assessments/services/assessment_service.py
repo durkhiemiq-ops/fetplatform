@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Protocol
 
 from core.academic_access import is_authorized_academic_user
-from core.audit import audit_assessment_change
+from core.audit import write_audit_entry
 from core.common import ConfigurationError, utc_now
 
 
@@ -82,11 +82,12 @@ def _audit(
             details=details,
         )
         return
-    audit_assessment_change(
+    write_audit_entry(
+        action=action,
+        resource_type="assessment",
+        resource_id=getattr(assessment, "id", None),
         actor_id=getattr(actor, "id", None),
-        assessment_id=getattr(assessment, "id", None),
-        reason=action,
-        metadata=details,
+        details=details,
     )
 
 
@@ -100,6 +101,7 @@ def create_assessment(
     released: bool = False,
     course_id: Optional[Any] = None,
     class_id: Optional[Any] = None,
+    scope_authorizer: Optional[Any] = None,
     audit_logger: Optional[Any] = None,
 ) -> AssessmentRecordLike:
     """Create an official assessment only for authorized academic users."""
@@ -108,6 +110,10 @@ def create_assessment(
         raise ConfigurationError("AssessmentModel is required")
     if created_by is None or not is_authorized_academic_user(created_by):
         raise UnauthorizedAssessmentActionError("Only authorized academic users can create an official assessment")
+    if scope_authorizer is None or not bool(scope_authorizer(created_by)):
+        raise UnauthorizedAssessmentActionError(
+            "Assessment context is outside the actor's academic responsibility"
+        )
     if student_id is None:
         raise AssessmentError("Student id is required")
 

@@ -48,10 +48,26 @@ class CheckpointSelectSerializer(serializers.Serializer):
 class CorrectionCreateSerializer(serializers.Serializer):
     # BR-042: a correction is only meaningful with its audit reason; the
     # original attendance record is never overwritten, only appended to.
+    status = serializers.ChoiceField(
+        choices=["PRESENT", "LATE", "ABSENT", "EXCUSED"]
+    )
     reason = serializers.CharField(trim_whitespace=True, allow_blank=False, max_length=2000)
 
     def validate(self, attrs):
-        unexpected = set(self.initial_data) - {"reason"}
+        unexpected = set(self.initial_data) - {"status", "reason"}
+        if unexpected:
+            raise serializers.ValidationError(
+                {field: "This field is not permitted." for field in unexpected}
+            )
+        return attrs
+
+
+class FlexibleAttendanceStartSerializer(serializers.Serializer):
+    offering_id = serializers.UUIDField()
+    duration_seconds = serializers.IntegerField(min_value=10, max_value=600, required=False)
+
+    def validate(self, attrs):
+        unexpected = set(self.initial_data) - {"offering_id", "duration_seconds"}
         if unexpected:
             raise serializers.ValidationError(
                 {field: "This field is not permitted." for field in unexpected}

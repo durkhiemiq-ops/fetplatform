@@ -46,6 +46,16 @@ class AttendanceCheckpoint(models.Model):
 
 
 class AttendanceRecord(models.Model):
+    class Status(models.TextChoices):
+        PRESENT = "PRESENT", "Present"
+        LATE = "LATE", "Late"
+        ABSENT = "ABSENT", "Absent"
+        EXCUSED = "EXCUSED", "Excused"
+
+    class VerificationMethod(models.TextChoices):
+        QR_SCAN = "QR_SCAN", "QR code scan"
+        MANUAL = "MANUAL", "Manual"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     attendance_session = models.ForeignKey(
         AttendanceSession, on_delete=models.PROTECT, related_name="records"
@@ -55,6 +65,12 @@ class AttendanceRecord(models.Model):
     )
     checkpoint = models.ForeignKey(
         AttendanceCheckpoint, on_delete=models.PROTECT, related_name="attendance_records"
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PRESENT)
+    verification_method = models.CharField(
+        max_length=20,
+        choices=VerificationMethod.choices,
+        default=VerificationMethod.QR_SCAN,
     )
     recorded_at = models.DateTimeField(auto_now_add=True)
 
@@ -76,6 +92,16 @@ class AttendanceCorrection(models.Model):
     )
     corrected_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="attendance_corrections"
+    )
+    old_status = models.CharField(
+        max_length=20,
+        choices=AttendanceRecord.Status.choices,
+        default=AttendanceRecord.Status.PRESENT,
+    )
+    new_status = models.CharField(
+        max_length=20,
+        choices=AttendanceRecord.Status.choices,
+        default=AttendanceRecord.Status.PRESENT,
     )
     reason = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)

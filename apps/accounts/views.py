@@ -3,6 +3,8 @@ import logging
 from django.contrib import auth
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_protect
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -52,7 +54,7 @@ def _success_response(data, http_status=status.HTTP_200_OK):
 def csrf_token_view(request):
     """Return the CSRF token. The token is also set as a cookie by Django's CsrfViewMiddleware."""
     token = get_token(request)
-    return JsonResponse({"success": True, "data": {"csrfToken": token}})
+    return JsonResponse({"success": True, "data": {"csrf_token": token}})
 
 
 class RegisterView(APIView):
@@ -106,6 +108,7 @@ class RegisterView(APIView):
         )
 
 
+@method_decorator(csrf_protect, name="dispatch")
 class LoginView(APIView):
     permission_classes = []
     authentication_classes = []

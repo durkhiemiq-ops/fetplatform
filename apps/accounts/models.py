@@ -90,6 +90,12 @@ class User(AbstractBaseUser, PermissionsMixin):
         null=True,
         blank=True,
     )
+    level = models.CharField(
+        max_length=10,
+        blank=True,
+        default="",
+        help_text="Institution-assigned academic level used for course registration.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

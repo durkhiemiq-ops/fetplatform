@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 from core.common import ConfigurationError, get_attr, utc_now
 from apps.notifications.services.notification_service import notify_student_enrolled
 
@@ -94,6 +96,19 @@ def _is_active_enrollment(record: Any) -> bool:
         return str(status).lower() in {"active", "enrolled", "current", "approved"}
 
     return False
+
+
+def _set_fk_if_target_exists(record: Any, field_name: str, target_id: Any) -> None:
+    """Set an optional audit FK only when the supplied actor is a real row."""
+    if target_id is None or not hasattr(record, f"{field_name}_id"):
+        return
+    try:
+        field = record._meta.get_field(field_name)
+        normalized_id = field.target_field.to_python(target_id)
+        if field.remote_field.model.objects.filter(pk=normalized_id).exists():
+            setattr(record, f"{field_name}_id", normalized_id)
+    except (AttributeError, TypeError, ValueError, DjangoValidationError):
+        return
 
 
 def is_student_enrolled_in_course(
@@ -202,8 +217,7 @@ def enroll_student_in_course(
         record.student_id = student_id
     if hasattr(record, "course_id"):
         record.course_id = course_id
-    if actor_id is not None and hasattr(record, "enrolled_by_id"):
-        record.enrolled_by_id = actor_id
+    _set_fk_if_target_exists(record, "enrolled_by", actor_id)
     if reason is not None and hasattr(record, "reason"):
         record.reason = reason
 
@@ -212,6 +226,8 @@ def enroll_student_in_course(
         record.deleted_at = None
     if hasattr(record, "ended_at"):
         record.ended_at = None
+    if hasattr(record, "dropped_at"):
+        record.dropped_at = None
 
     record.save()
     # BR §23 + API §45: the enrolled student is the only eligible recipient of
@@ -257,12 +273,13 @@ def drop_student_from_course(
     if record is None or not _is_active_enrollment(record):
         raise NotEnrolledError(f"Student {student_id} is not enrolled in course {course_id}")
 
-    if actor_id is not None and hasattr(record, "dropped_by_id"):
-        record.dropped_by_id = actor_id
+    _set_fk_if_target_exists(record, "dropped_by", actor_id)
     if reason is not None and hasattr(record, "reason"):
         record.reason = reason
 
     _set_active_state(record, is_active=False)
+    if hasattr(record, "dropped_at"):
+        record.dropped_at = utc_now()
     if hasattr(record, "deleted_at"):
         record.deleted_at = None
 

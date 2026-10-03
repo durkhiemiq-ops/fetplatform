@@ -174,6 +174,7 @@ SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 CSRF_COOKIE_HTTPONLY = False  # JS needs to read CSRF token for DRF browsable API
 CSRF_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SECURE = not DEBUG  # BR-200: secure cookies in production
+CSRF_FAILURE_VIEW = "core.csrf.csrf_failure"
 
 # ===== Attendance timing — RESOLVED single source of truth =====
 # QR token TTL (10s) and attendance-session window (60s) are the resolved
@@ -230,7 +231,7 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.environ.get(
         "CORS_ALLOWED_ORIGINS",
-        "http://localhost:5173",
+        "http://localhost:3000",
     ).split(",")
     if origin.strip()
 ]
@@ -241,7 +242,7 @@ CSRF_TRUSTED_ORIGINS = [
     origin.strip()
     for origin in os.environ.get(
         "CSRF_TRUSTED_ORIGINS",
-        "http://localhost:5173",
+        "http://localhost:3000",
     ).split(",")
     if origin.strip()
 ]

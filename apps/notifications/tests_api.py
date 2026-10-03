@@ -344,12 +344,21 @@ class DomainTriggerTests(TestCase):
 
     def test_correction_notifies_record_student(self):
         record = self._record()
-        correction = correct_attendance(record=record, lecturer=self.lecturer, reason="Marked present")
+        correction = correct_attendance(
+            record=record,
+            lecturer=self.lecturer,
+            new_status="EXCUSED",
+            reason="Marked excused after a medical note",
+        )
         items = Notification.objects.filter(recipient=self.student)
         self.assertEqual(items.count(), 1)
         self.assertEqual(items.get().category, "attendance_correction")
         self.assertEqual(items.get().related_id, str(record.id))
         self.assertIsNotNone(correction.id)
+        # The correction carries the transition it describes, so the student's
+        # notification is traceable back to what actually changed.
+        self.assertEqual(correction.old_status, AttendanceRecord.Status.PRESENT)
+        self.assertEqual(correction.new_status, AttendanceRecord.Status.EXCUSED)
 
     def test_role_change_notifies_target_account(self):
         target = User.objects.create_user(

@@ -8,7 +8,13 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from core.models import AuditEvent
 
-from .models import Project, ProjectContribution, ProjectGroupMembership, ProjectTask
+from .models import (
+    Project,
+    ProjectContribution,
+    ProjectGroup,
+    ProjectGroupMembership,
+    ProjectTask,
+)
 
 GHOST = "11111111-1111-1111-1111-111111111111"
 
@@ -104,8 +110,8 @@ class ProjectApiTests(TestCase):
         # students may not drive the lifecycle
         self.client.force_authenticate(user=self.student)
         denied = self.client.patch(detail, {"status": "active"}, format="json")
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(denied.data["error"]["code"], "UNAUTHORIZED")
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied.data["error"]["code"], "NOT_FOUND")
 
     def test_membership_duplicate_and_authorization(self):
         url = reverse("projects:member-add", args=[self.project.pk])
@@ -119,8 +125,8 @@ class ProjectApiTests(TestCase):
 
         self.client.force_authenticate(user=self.outsider)
         denied = self.client.post(url, {"student": str(self.student.id)}, format="json")
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(denied.data["error"]["code"], "UNAUTHORIZED")
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied.data["error"]["code"], "NOT_FOUND")
 
     def test_task_creation_and_status_rules(self):
         self._add_member()
@@ -151,11 +157,13 @@ class ProjectApiTests(TestCase):
         # outsiders cannot
         self.client.force_authenticate(user=self.outsider)
         denied = self.client.patch(status_url, {"status": "completed"}, format="json")
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(denied.data["error"]["code"], "UNAUTHORIZED")
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied.data["error"]["code"], "NOT_FOUND")
 
     def test_contribution_flow(self):
         self._add_member()
+        self.task.assignee = self.student
+        self.task.save(update_fields=["assignee"])
         list_url = reverse("projects:contribution-create", args=[self.project.pk])
 
         # participant submits task-linked evidence (BR-120/121)
@@ -185,8 +193,8 @@ class ProjectApiTests(TestCase):
             {"evidence_type": "task", "evidence_ref": str(self.task.id)},
             format="json",
         )
-        self.assertEqual(not_participant.status_code, 403)
-        self.assertEqual(not_participant.data["error"]["code"], "NOT_PARTICIPANT")
+        self.assertEqual(not_participant.status_code, 404)
+        self.assertEqual(not_participant.data["error"]["code"], "NOT_FOUND")
 
         # supervisor reviews with audit (BR-122/210)
         self.client.force_authenticate(user=self.lecturer)
@@ -208,8 +216,8 @@ class ProjectApiTests(TestCase):
             {"approved": False},
             format="json",
         )
-        self.assertEqual(denied.status_code, 403)
-        self.assertEqual(denied.data["error"]["code"], "UNAUTHORIZED")
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(denied.data["error"]["code"], "NOT_FOUND")
 
     def test_contribution_list_visibility(self):
         self._add_member()
@@ -309,3 +317,257 @@ class ProjectApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["error"]["code"], "UNAUTHORIZED")
+
+    def test_member_removal_is_project_scoped_and_audited(self):
+        group = ProjectGroup.objects.create(project=self.project, name="Team")
+        membership = ProjectGroupMembership.objects.create(
+            project=self.project, group=group, student=self.student
+        )
+        url = reverse(
+            "projects:member-delete",
+            args=[self.project.pk, group.pk, self.student.pk],
+        )
+
+        self.client.force_authenticate(user=self.outsider)
+        hidden = self.client.delete(url)
+        self.assertEqual(hidden.status_code, 404)
+        self.assertTrue(ProjectGroupMembership.objects.filter(pk=membership.pk).exists())
+
+        self.client.force_authenticate(user=self.lecturer)
+        removed = self.client.delete(url)
+        self.assertEqual(removed.status_code, 200)
+        self.assertFalse(ProjectGroupMembership.objects.filter(pk=membership.pk).exists())
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                action="project_member_removed", resource_id=str(membership.pk)
+            ).exists()
+        )
+
+    def test_student_cannot_claim_another_students_task(self):
+        other_student = User.objects.create_user(
+            "proj-other-student@example.test",
+            "proj-other-student",
+            "Other",
+            "Student",
+            "StrongPass!2026",
+        )
+        self._add_member()
+        self._add_member(other_student)
+        self.task.assignee = other_student
+        self.task.save(update_fields=["assignee"])
+
+        self.client.force_authenticate(user=self.student)
+        response = self.client.post(
+            reverse("projects:contribution-create", args=[self.project.pk]),
+            {"evidence_type": "task", "evidence_ref": str(self.task.pk)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["error"]["code"], "INVALID_EVIDENCE")
+        self.assertFalse(ProjectContribution.objects.exists())
+
+    def test_official_task_status_stays_lecturer_controlled(self):
+        self._add_member()
+        self.task.assignee = self.student
+        self.task.is_official = True
+        self.task.save(update_fields=["assignee", "is_official"])
+
+        self.client.force_authenticate(user=self.student)
+        response = self.client.patch(
+            reverse("projects:task-status", args=[self.task.pk]),
+            {"status": "completed"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "todo")
+
+
+class CrossProjectGroupIdorTests(TestCase):
+    """A client-supplied group id must be scoped to the project being modified.
+
+    The vulnerability these close
+    -----------------------------
+    ``POST /projects/{pk}/members/`` validated its optional ``group`` field with
+    a bare ``ProjectGroup.objects.filter(pk=group_id).exists()`` -- "does this
+    group exist anywhere in the system", not "does it belong to *this* project".
+    A manager of project A could pass the UUID of a group owned by project B and
+    write a ``ProjectGroupMembership`` row whose ``project_id`` was A while its
+    ``group_id`` pointed into B. Because ``ProjectGroupMembership.group`` uses
+    ``related_name="memberships"``, the injected row then appeared in project
+    B's group roster.
+
+    ``TaskCreateSerializer.validate_group`` had the identical unscoped probe,
+    which made the two a chain: create the cross-project membership, then point
+    a task at that group and pass ``_participant_lookup`` (which requires a
+    membership row matching *both* the caller's project and the group id).
+
+    Every assertion below fails against the original code: the pre-fix service
+    returned 201 and persisted the row.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.alice = User.objects.create_user(
+            "alice-lect@example.test", "alice-lect", "Alice", "L", "StrongPass!2026",
+            role=User.Role.LECTURER,
+        )
+        self.bob = User.objects.create_user(
+            "bob-lect@example.test", "bob-lect", "Bob", "L", "StrongPass!2026",
+            role=User.Role.LECTURER,
+        )
+        self.student = User.objects.create_user(
+            "idor-student@example.test", "idor-student", "Stu", "Dent", "StrongPass!2026"
+        )
+
+        # Project A, managed by Alice. Project B, managed by Bob.
+        self.project_a = Project.objects.create(
+            title="Project A", owner=self.alice, supervisor=self.alice,
+            created_by=self.alice, status="draft",
+        )
+        self.project_b = Project.objects.create(
+            title="Project B", owner=self.bob, supervisor=self.bob,
+            created_by=self.bob, status="draft",
+        )
+        self.group_b = ProjectGroup.objects.create(
+            project=self.project_b, name="Bob's secret group"
+        )
+        self.group_a = ProjectGroup.objects.create(
+            project=self.project_a, name="Alice's group"
+        )
+
+    def test_cannot_add_member_into_another_projects_group(self):
+        """The core IDOR: Alice writes into Bob's group via her own project."""
+        self.client.force_authenticate(user=self.alice)
+        response = self.client.post(
+            reverse("projects:member-add", args=[self.project_a.pk]),
+            {"student": str(self.student.id), "group": str(self.group_b.pk)},
+            format="json",
+        )
+
+        # Pre-fix this was 201 and wrote the row.
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["error"]["code"], "NOT_FOUND")
+
+        # Nothing persisted, and crucially nothing pointing at Bob's group.
+        self.assertFalse(ProjectGroupMembership.objects.exists())
+        self.assertFalse(
+            ProjectGroupMembership.objects.filter(
+                project=self.project_a, group=self.group_b
+            ).exists()
+        )
+        self.assertFalse(self.group_b.memberships.exists())
+
+    def test_cannot_assign_task_to_another_projects_group(self):
+        """Second link in the chain, closed independently.
+
+        Pre-fix, ``validate_group`` accepted any existing group id, and
+        ``_participant_lookup`` was satisfied by the membership row created
+        above -- so a task in project A could be aimed at project B's group.
+        """
+        # Plant the exact row the first exploit would have created.
+        ProjectGroupMembership.objects.create(
+            project=self.project_a, group=self.group_b, student=self.student
+        )
+        self.client.force_authenticate(user=self.alice)
+        response = self.client.post(
+            reverse("projects:task-create", args=[self.project_a.pk]),
+            {"title": "Leak", "group": str(self.group_b.pk)},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["error"]["code"], "NOT_FOUND")
+        self.assertFalse(
+            ProjectTask.objects.filter(project=self.project_a, group=self.group_b).exists()
+        )
+
+    def test_missing_group_and_foreign_group_are_indistinguishable(self):
+        """§25: the endpoint must not reveal which group ids exist platform-wide.
+
+        Both a non-existent uuid and a real group owned by another project must
+        produce byte-identical status, code and message.
+        """
+        self.client.force_authenticate(user=self.alice)
+        url = reverse("projects:member-add", args=[self.project_a.pk])
+        payload = {"student": str(self.student.id)}
+
+        foreign = self.client.post(
+            url, dict(payload, group=str(self.group_b.pk)), format="json"
+        )
+        nonexistent = self.client.post(
+            url, dict(payload, group=GHOST), format="json"
+        )
+
+        self.assertEqual(foreign.status_code, nonexistent.status_code)
+        self.assertEqual(foreign.data, nonexistent.data)
+        self.assertEqual(nonexistent.status_code, 404)
+
+    def test_own_projects_group_is_still_accepted(self):
+        """The fix must not over-block: a group from the caller's own project
+        works exactly as before."""
+        self.client.force_authenticate(user=self.alice)
+        response = self.client.post(
+            reverse("projects:member-add", args=[self.project_a.pk]),
+            {"student": str(self.student.id), "group": str(self.group_a.pk)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        membership = ProjectGroupMembership.objects.get(project=self.project_a)
+        self.assertEqual(membership.group_id, self.group_a.pk)
+
+    def test_group_omitted_is_unaffected(self):
+        """Membership without a group (the common case) still works."""
+        self.client.force_authenticate(user=self.alice)
+        response = self.client.post(
+            reverse("projects:member-add", args=[self.project_a.pk]),
+            {"student": str(self.student.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(ProjectGroupMembership.objects.get().group_id)
+
+    def test_admin_is_also_project_scoped_for_groups(self):
+        """Even a platform admin cannot smuggle a foreign group id.
+
+        ``_can_manage`` lets an admin manage any project, which is correct --
+        but "manages project A" must not extend to "may point project A's rows
+        at project B's groups".
+        """
+        admin = User.objects.create_user(
+            "idor-admin@example.test", "idor-admin", "Ad", "Min", "StrongPass!2026",
+            role=User.Role.ADMINISTRATOR,
+        )
+        self.client.force_authenticate(user=admin)
+        response = self.client.post(
+            reverse("projects:member-add", args=[self.project_a.pk]),
+            {"student": str(self.student.id), "group": str(self.group_b.pk)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(ProjectGroupMembership.objects.exists())
+
+    def test_service_layer_refuses_without_a_scoped_lookup(self):
+        """Defence in depth: the service fails closed if no scoped lookup is
+        supplied, so a future caller cannot reintroduce the bug by forgetting
+        the injection."""
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        from apps.projects.services.project_service import (
+            ProjectGroupNotInProjectError,
+            add_project_member,
+        )
+
+        with self.assertRaises(ProjectGroupNotInProjectError):
+            add_project_member(
+                ProjectModel=Project,
+                project_id=self.project_a.pk,
+                student_id=self.student.pk,
+                actor_id=self.alice.pk,
+                group_id=self.group_b.pk,
+                GroupMembershipModel=ProjectGroupMembership,
+                is_explicit_assignment=True,
+                actor_authorizer=lambda actor_id, project: True,
+                # group_lookup intentionally omitted
+            )
