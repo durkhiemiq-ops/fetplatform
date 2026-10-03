@@ -133,16 +133,17 @@ const CourseDetail = ({ user }) => {
   }, [offeringId]);
 
   const loadAnnouncements = useCallback(async () => {
+    if (!course?.course) return;
     setAnnLoading(true);
     try {
-      const data = await announcementsApi.listForCourse(offeringId);
+      const data = await announcementsApi.listForCourse(course.course);
       setAnnouncements(data || []);
     } catch (err) {
       notifyError('Failed to load announcements.');
     } finally {
       setAnnLoading(false);
     }
-  }, [offeringId]);
+  }, [course?.course]);
 
   const loadAssignments = useCallback(async () => {
     setAsgnLoading(true);
@@ -240,10 +241,11 @@ const CourseDetail = ({ user }) => {
     setErrorMsg('');
     try {
       await announcementsApi.create({
-        scope_type: 'COURSE',
-        course_offering: offeringId,
+        scope: 'course',
+        scope_id: course.course,
         title: annForm.title.trim(),
-        content: annForm.content.trim(),
+        body: annForm.content.trim(),
+        published: true,
       });
       setAnnForm({ title: '', content: '' });
       notify('Announcement published.');
@@ -627,7 +629,7 @@ const CourseDetail = ({ user }) => {
                   </button>
                 )}
               </div>
-              <p className="mt-2 text-sm text-text-primary whitespace-pre-wrap leading-relaxed">{ann.content}</p>
+              <p className="mt-2 text-sm text-text-primary whitespace-pre-wrap leading-relaxed">{ann.body}</p>
             </div>
           ))}
         </div>

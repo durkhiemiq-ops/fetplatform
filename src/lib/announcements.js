@@ -7,7 +7,7 @@ const toData = async (promise) => {
 
 export const announcementsApi = {
   list: (params) => toData(api.get('/announcements/', { params })),
-  listForCourse: (offeringId) => toData(api.get('/announcements/', { params: { course_offering_id: offeringId } })),
+  listForCourse: (courseId) => toData(api.get('/announcements/', { params: { course_id: courseId } })),
   create: (data) => toData(api.post('/announcements/', data)),
   update: (id, data) => toData(api.patch(`/announcements/${id}/`, data)),
   remove: (id) => api.delete(`/announcements/${id}/`),

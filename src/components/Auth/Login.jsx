@@ -6,7 +6,6 @@ const Login = ({ onLogin }) => {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -24,8 +23,7 @@ const Login = ({ onLogin }) => {
     }
 
     try {
-      // Determine if identifier is email or matricule
-      const payload = id.includes('@') ? { email: id, password } : { matricule: id, password };
+      const payload = { identifier: id, password };
       const response = await authApi.login(payload);
       // Tokens are set as httpOnly cookies by the backend — JS never sees them.
       const user = response.data?.data ?? response.data;
@@ -114,18 +112,6 @@ const Login = ({ onLogin }) => {
                   {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
                 </button>
               </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <label className="flex items-center gap-2 text-[13px] text-text-secondary cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="w-4 h-4 rounded border-border-default text-primary focus:ring-primary/20 cursor-pointer"
-                />
-                Remember me
-              </label>
             </div>
 
             <button 

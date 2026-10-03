@@ -1,12 +1,15 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+export const apiBaseUrl = (base, isDevelopment) => {
+  if (isDevelopment || !base) return '/api/v1';
+  const normalized = base.replace(/\/+$/, '');
+  return normalized.endsWith('/api/v1') ? normalized : `${normalized}/api/v1`;
+};
 
 // Credentials live ONLY in httpOnly cookies set by the backend. This client
-// never reads or writes session tokens from JS-accessible storage, so an XSS
-// cannot steal them.
+// never reads or writes session tokens from JS-accessible storage.
 const api = axios.create({
-  baseURL: `${API_BASE}/api/v1`,
+  baseURL: apiBaseUrl(import.meta.env?.VITE_API_BASE, import.meta.env?.DEV),
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
@@ -68,7 +71,7 @@ api.interceptors.request.use(async (config) => {
 
 // Nothing is cached in localStorage any more (AGENTS.md): identity lives in
 // React state via SessionProvider, and the httpOnly session cookie is the only
-// authority. This hook exists so the 401 interceptor can still tell the app to
+// authority. This hook tells the app to
 // drop to the login screen.
 const notifySessionExpired = () => {
   if (typeof window !== 'undefined') {
@@ -78,24 +81,19 @@ const notifySessionExpired = () => {
 
 api.interceptors.response.use(
   (response) => response,
-  async (error) => {
-    const originalRequest = error.config;
-    if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
-      originalRequest._retry = true;
-      try {
-        // Session auth has no rotating token; this endpoint reports whether the
-        // session is still alive so the retry below is meaningful.
-        await ensureCsrfToken();
-        await api.post('/auth/refresh/', null);
-        return api(originalRequest);
-      } catch {
-        // The session is genuinely dead. Tell the app to return to login
-        // rather than clearing storage keys nothing reads any more.
-        notifySessionExpired();
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login';
-        }
-      }
+  (error) => {
+    const path = error.config?.url || '';
+    const isSignInRequest = /\/(?:auth|accounts)\/(?:login|register|self-register|verify-email)\//.test(path);
+    const status = error.response?.status;
+    const detail = error.response?.data?.error;
+    // DRF SessionAuthentication reports missing credentials as 403. Other
+    // 403 responses (including CSRF and permission failures) keep the session.
+    const missingSession = status === 401 || (
+      status === 403 && detail?.code === 'FORBIDDEN' &&
+      detail?.message === 'Authentication credentials were not provided.'
+    );
+    if (!isSignInRequest && missingSession) {
+      notifySessionExpired();
     }
     return Promise.reject(error);
   }

@@ -54,18 +54,26 @@ const Header = ({ user, onLogout }) => {
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  const name = user?.fullName || 'User';
+  const name = [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.email?.split('@')[0] || 'User';
   const role = normalizeRole(user?.role || 'student');
   const initials = name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  const markAsRead = (id) => {
-    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
-    notificationsApi.markRead(id).catch(() => {});
+  const markAsRead = async (id) => {
+    try {
+      await notificationsApi.markRead(id);
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    } catch {
+      // Keep the unread state when the server did not persist the mutation.
+    }
   };
-  const markAllAsRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    notificationsApi.markAllRead().catch(() => {});
+  const markAllAsRead = async () => {
+    try {
+      await notificationsApi.markAllRead();
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    } catch {
+      // Keep the current badge when the server rejected the mutation.
+    }
   };
 
   const handleLogout = () => {

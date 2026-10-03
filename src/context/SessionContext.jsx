@@ -46,7 +46,7 @@ const SessionContext = createContext({
 export const SessionProvider = ({ user, isAuthenticated, children }) => {
   const value = useMemo(() => {
     const role = normalizeRole(user?.role || 'student');
-    const userName = user?.full_name || user?.fullName || user?.email?.split('@')[0] || 'User';
+    const userName = [user?.first_name, user?.last_name].filter(Boolean).join(' ') || user?.email?.split('@')[0] || 'User';
     return {
       user,
       role,

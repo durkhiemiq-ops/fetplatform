@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
 import { announcementsApi } from '../../lib/announcements';
 import { errorMessage } from '../../lib/enrollment';
-import { formatDateTime } from '../../lib/format';
 
 const SCOPES = [
-  { value: 'FACULTY', label: 'Whole faculty' },
-  { value: 'DEPARTMENT', label: 'My department' },
-  { value: 'COURSE', label: 'A course' },
+  { value: 'faculty', label: 'Whole faculty', identity: 'faculty' },
+  { value: 'department', label: 'My department', identity: 'department' },
+  { value: 'course', label: 'A course' },
 ];
 
 /**
@@ -16,13 +15,13 @@ const SCOPES = [
  * name, and it expected `onClose`/`onSuccess` while its caller passes
  * `onCancel`/`onSaved`, so submitting called an undefined function and threw.
  */
-const AnnouncementForm = ({ onCancel, onSaved, courses = [] }) => {
+const AnnouncementForm = ({ onCancel, onSaved, courses = [], user }) => {
+  const availableScopes = SCOPES.filter((item) => item.value === 'course' || user?.[item.identity]);
   const [form, setForm] = useState({
     title: '',
-    content: '',
-    scope_type: 'FACULTY',
-    course_offering: '',
-    expires_at: '',
+    body: '',
+    scope: availableScopes[0]?.value || 'course',
+    course: '',
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -34,20 +33,20 @@ const AnnouncementForm = ({ onCancel, onSaved, courses = [] }) => {
     try {
       const payload = {
         title: form.title.trim(),
-        content: form.content.trim(),
-        scope_type: form.scope_type,
-        status: 'PUBLISHED',
-        published_at: new Date().toISOString(),
+        body: form.body.trim(),
+        scope: form.scope,
+        published: true,
       };
-      if (form.scope_type === 'COURSE') {
-        if (!form.course_offering) {
+      if (form.scope === 'course') {
+        if (!form.course) {
           setError('Choose the course this announcement is for.');
           setBusy(false);
           return;
         }
-        payload.course_offering = form.course_offering;
+        payload.scope_id = form.course;
+      } else {
+        payload.scope_id = user?.[form.scope];
       }
-      if (form.expires_at) payload.expires_at = new Date(form.expires_at).toISOString();
       await announcementsApi.create(payload);
       if (onSaved) onSaved();
     } catch (err) {
@@ -79,8 +78,8 @@ const AnnouncementForm = ({ onCancel, onSaved, courses = [] }) => {
       <div>
         <label className="fet-label">Content</label>
         <textarea
-          value={form.content}
-          onChange={(e) => setForm({ ...form, content: e.target.value })}
+          value={form.body}
+          onChange={(e) => setForm({ ...form, body: e.target.value })}
           rows={4}
           required
           className="w-full px-4 py-2 fet-input resize-none"
@@ -91,24 +90,24 @@ const AnnouncementForm = ({ onCancel, onSaved, courses = [] }) => {
         <label className="fet-label">Audience</label>
         <select
           className="w-full px-4 py-2 fet-select"
-          value={form.scope_type}
-          onChange={(e) => setForm({ ...form, scope_type: e.target.value })}
+          value={form.scope}
+          onChange={(e) => setForm({ ...form, scope: e.target.value, course: '' })}
         >
-          {SCOPES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+          {availableScopes.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
         </select>
       </div>
 
-      {form.scope_type === 'COURSE' ? (
+      {form.scope === 'course' ? (
         <div>
           <label className="fet-label">Course</label>
           <select
             className="w-full px-4 py-2 fet-select"
-            value={form.course_offering}
-            onChange={(e) => setForm({ ...form, course_offering: e.target.value })}
+            value={form.course}
+            onChange={(e) => setForm({ ...form, course: e.target.value })}
           >
             <option value="">Choose a course...</option>
             {courses.map((c) => (
-              <option key={c.id} value={c.id}>
+              <option key={c.id} value={c.course}>
                 {c.course_code} — {c.course_title}
               </option>
             ))}
@@ -118,21 +117,6 @@ const AnnouncementForm = ({ onCancel, onSaved, courses = [] }) => {
           </p>
         </div>
       ) : null}
-
-      <div>
-        <label className="fet-label">Expires (optional)</label>
-        <input
-          type="datetime-local"
-          className="w-full px-4 py-2 fet-input"
-          value={form.expires_at}
-          onChange={(e) => setForm({ ...form, expires_at: e.target.value })}
-        />
-        {form.expires_at ? (
-          <p className="text-[11.5px] text-text-tertiary mt-1">
-            Hidden after {formatDateTime(form.expires_at)}.
-          </p>
-        ) : null}
-      </div>
 
       <div className="flex justify-end gap-3 pt-1">
         <button type="button" onClick={onCancel} className="fet-btn-secondary" disabled={busy}>

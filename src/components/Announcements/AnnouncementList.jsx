@@ -180,7 +180,7 @@ const AnnouncementList = ({ user }) => {
               className="mt-3 block w-full text-left"
             >
               <div className="ui-hero-title">{pinned.title}</div>
-              <p className="ui-hero-body">{pinned.content}</p>
+              <p className="ui-hero-body">{pinned.body}</p>
             </button>
           </div>
           <div className="ui-card-foot">
@@ -275,7 +275,7 @@ const AnnouncementList = ({ user }) => {
                 className="block w-full text-left"
                 disabled={item.is_read}
               >
-                <p className="ui-ann-body">{item.content}</p>
+                <p className="ui-ann-body">{item.body}</p>
               </button>
 
               <div className="ui-ann-foot">
@@ -307,6 +307,7 @@ const AnnouncementList = ({ user }) => {
             <div className="p-5">
               <AnnouncementForm
                 courses={myOfferings}
+                user={user}
                 onCancel={() => setShowForm(false)}
                 onSaved={handleSaved}
               />

@@ -1,5 +1,6 @@
 import api from './api';
 import { normalizeRole } from './profile';
+import { downloadFilename } from './downloads';
 
 const toData = async (promise) => {
   const res = await promise;
@@ -11,18 +12,13 @@ const toData = async (promise) => {
 /**
  * Fetch a binary resource *through the authenticated axios instance* and save it.
  *
- * The previous helpers returned a bare absolute URL for use as an `<a href>`.
- * A plain link navigation does not send the session cookie cross-origin and
- * bypasses the axios client's withCredentials/CSRF setup, so every material
- * download and CSV export failed with 401/403 outside a same-origin proxy.
- * Going through `api.get(..., { responseType: 'blob' })` keeps the session.
+ * Uses the same credentials and error handling as other API requests.
  */
 const downloadBlob = async (path, fallbackName) => {
   const res = await api.get(path, { responseType: 'blob' });
   const disposition = res.headers?.['content-disposition'] || '';
   // Prefer the server's filename; fall back to something sensible.
-  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
-  const name = match ? decodeURIComponent(match[1].trim()) : fallbackName;
+  const name = downloadFilename(disposition, fallbackName);
 
   const href = URL.createObjectURL(res.data);
   const anchor = document.createElement('a');
@@ -80,8 +76,7 @@ export const learningApi = {
     return body && typeof body === 'object' && 'data' in body ? body.data : body;
   },
   getDownloadUrl: (fileId) => `${api.defaults.baseURL}/files/${fileId}/`,
-  // Authenticated download. Prefer this over `getDownloadUrl`, which returns a
-  // bare cross-origin URL that cannot carry the session cookie.
+  // Authenticated download with the API client's error handling.
   downloadFile: (fileId) => downloadBlob(`/files/${fileId}/`, `download-${fileId}`),
   // Assignments (teacher sets due date, late policy, submission limit).
   getAssignments: (offeringId) => toData(api.get(`/course-offerings/${offeringId}/assignments/`)),

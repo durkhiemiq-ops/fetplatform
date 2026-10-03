@@ -8,18 +8,18 @@ import { projectsApi } from '../../lib/projects';
 import { useSession } from '../../context/SessionContext';
 import { statusBadge, formatDateTime } from './projectUi';
 
-const TABS = ['Overview', 'Members', 'Tasks', 'Milestones', 'Documents', 'Activity', 'Assessments'];
+const TABS = ['Overview', 'Members', 'Tasks', 'Milestones', 'Activity'];
 
 const initials = (name = '') =>
   name.split(' ').map((n) => n[0]).join('').toUpperCase().slice(0, 2);
 
 const taskStatusBadge = (status) => {
   const cls = {
-    TODO: 'fet-badge fet-badge-inactive',
-    IN_PROGRESS: 'fet-badge fet-badge-pending',
-    COMPLETED: 'fet-badge fet-badge-completed',
+    todo: 'fet-badge fet-badge-inactive',
+    in_progress: 'fet-badge fet-badge-pending',
+    completed: 'fet-badge fet-badge-completed',
   }[status] || 'fet-badge fet-badge-inactive';
-  return <span className={cls}>{status?.replace('_', ' ') || 'TODO'}</span>;
+  return <span className={cls}>{status?.replace('_', ' ') || 'todo'}</span>;
 };
 
 const ProjectDetails = () => {
@@ -36,35 +36,32 @@ const ProjectDetails = () => {
   const [groups, setGroups] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [milestones, setMilestones] = useState([]);
-  const [documents, setDocuments] = useState([]);
   const [contributions, setContributions] = useState([]);
-  const [assessments, setAssessments] = useState([]);
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [report, setReport] = useState(null);
   const [notice, setNotice] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const [p, g, t, ms, d, c, a] = await Promise.all([
-        projectsApi.getProject(id),
-        projectsApi.listGroups(id),
-        projectsApi.listTasks(id),
-        projectsApi.listMilestones(id),
-        projectsApi.listDocuments(id),
-        projectsApi.listContributions(id),
-        projectsApi.listAssessments(id),
-      ]);
-      setProject(p);
-      setGroups(g);
-      setTasks(t);
-      setMilestones(ms);
-      setDocuments(d);
-      setContributions(c);
-      setAssessments(a);
+      const bundle = await projectsApi.getProject(id);
+      const members = bundle.members || [];
+      const bundledGroups = (bundle.groups || []).map((group) => {
+        const groupMembers = members
+          .filter((member) => member.group === group.id)
+          .map((member) => ({
+            ...member,
+            role: member.student === group.leader ? 'GROUP_LEADER' : 'MEMBER',
+          }));
+        return { ...group, members: groupMembers, member_count: groupMembers.length };
+      });
+      setProject(bundle.project);
+      setGroups(bundledGroups);
+      setTasks(bundle.tasks || []);
+      setMilestones(bundle.milestones || []);
+      setContributions(bundle.contributions || []);
     } catch (err) {
       setError(err.response?.data?.error?.message || 'Could not load project.');
     } finally {
@@ -80,8 +77,8 @@ const ProjectDetails = () => {
   };
 
   const progress =
-    project && project.task_count > 0
-      ? Math.round((project.completed_task_count / project.task_count) * 100)
+    tasks.length > 0
+      ? Math.round((tasks.filter((task) => task.status === 'completed').length / tasks.length) * 100)
       : 0;
 
   if (loading) {
@@ -191,44 +188,14 @@ const ProjectDetails = () => {
             onChanged={async () => { await load(); flash('Milestones updated.'); }}
           />
         )}
-        {activeTab === 'documents' && <DocumentsTab documents={documents} />}
         {activeTab === 'activity' && (
           <ActivityTab
-            projectId={id} contributions={contributions}
+            projectId={id} contributions={contributions} tasks={tasks}
+            groups={groups} currentUserId={currentUserId}
             onChanged={async () => { await load(); flash('Contribution logged.'); }}
           />
         )}
-        {activeTab === 'assessments' && (
-          <AssessmentsTab
-            projectId={id} assessments={assessments} members={allMembers}
-            canManage={canManage}
-            onChanged={async () => { await load(); }}
-          />
-        )}
       </div>
-
-      {canManage && groups.length > 0 && (
-        <div className="flex justify-end">
-          <button
-            onClick={async () => {
-              try {
-                const r = await projectsApi.groupReport(id, groups[0]?.id);
-                setReport(r);
-              } catch (err) {
-                setError(err.response?.data?.error?.message || 'Could not load report.');
-              }
-            }}
-            className="fet-btn-secondary flex items-center gap-2"
-          >
-            <Download size={16} />
-            Group Report
-          </button>
-        </div>
-      )}
-
-      {report && (
-        <ReportModal report={report} onClose={() => setReport(null)} />
-      )}
     </div>
   );
 };
@@ -282,10 +249,10 @@ const MembersTab = ({ projectId, groups, members, canManage, onChanged }) => {
     } catch { /* no candidates */ }
   };
 
-  const addMember = async (groupId, studentId, role) => {
+  const addMember = async (groupId, studentId) => {
     setBusy(true);
     try {
-      await projectsApi.addMember(projectId, groupId, { student_id: studentId, role });
+      await projectsApi.addMember(projectId, groupId, { student: studentId });
       setShowAddMember(false);
       await onChanged();
     } catch (err) {
@@ -358,26 +325,6 @@ const MembersTab = ({ projectId, groups, members, canManage, onChanged }) => {
                 </li>
               ))}
             </ul>
-            {canManage && (
-              <button
-                onClick={async () => {
-                  // Promote the first non-leader to group leader (BR-073).
-                  const leader = group.members.find((m) => m.role === 'GROUP_LEADER');
-                  const target = leader ? null : group.members[0];
-                  if (!target) return;
-                  try {
-                    await projectsApi.removeMember(projectId, group.id, target.student);
-                    await projectsApi.addMember(projectId, group.id, { student_id: target.student, role: 'GROUP_LEADER' });
-                    await onChanged();
-                  } catch (err) {
-                    alert(err.response?.data?.error?.message || 'Could not set group leader.');
-                  }
-                }}
-                className="text-[12px] text-primary hover:underline mt-3"
-              >
-                Set Group Leader
-              </button>
-            )}
           </div>
         ))}
       </div>
@@ -405,15 +352,17 @@ const MembersTab = ({ projectId, groups, members, canManage, onChanged }) => {
               {candidates.map((c) => (
                 <div key={c.id} className="border border-border-default rounded-xl p-3 flex items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="text-[13px] font-medium text-text-primary">{c.full_name}</p>
-                    <p className="text-[11px] text-text-secondary truncate">{c.student_number || ''} • {c.email}</p>
+                    <p className="text-[13px] font-medium text-text-primary">
+                      {[c.first_name, c.last_name].filter(Boolean).join(' ') || c.username}
+                    </p>
+                    <p className="text-[11px] text-text-secondary truncate">{c.username}</p>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {groups.map((g) => (
                       <button
                         key={g.id}
                         disabled={busy}
-                        onClick={() => addMember(g.id, c.id, 'MEMBER')}
+                        onClick={() => addMember(g.id, c.id)}
                         className="fet-btn-secondary text-[11px] px-2 py-1 disabled:opacity-50"
                       >
                         {g.name}
@@ -432,14 +381,13 @@ const MembersTab = ({ projectId, groups, members, canManage, onChanged }) => {
 
 const GroupForm = ({ projectId, onClose, onDone }) => {
   const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
   const [busy, setBusy] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
     try {
-      await projectsApi.createGroup(projectId, { name, description });
+      await projectsApi.createGroup(projectId, { name });
       await onDone();
     } catch (err) {
       alert(err.response?.data?.error?.message || 'Could not create group.');
@@ -458,10 +406,6 @@ const GroupForm = ({ projectId, onClose, onDone }) => {
           <div>
             <label className="fet-label">Group Name</label>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} required className="fet-input" />
-          </div>
-          <div>
-            <label className="fet-label">Description</label>
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} className="fet-input resize-none" />
           </div>
           <div className="flex justify-end gap-3">
             <button type="button" onClick={onClose} className="fet-btn-secondary">Cancel</button>
@@ -492,18 +436,17 @@ const TasksTab = ({ projectId, tasks, groups, members, canManage, currentUserId,
       {tasks.length === 0 && <p className="text-center text-text-secondary py-6">No tasks for this project.</p>}
       <div className="space-y-2">
         {tasks.map((task) => {
-          const mine = task.assigned_student && task.assigned_student === currentUserId;
+          const mine = task.assignee && task.assignee === currentUserId;
           return (
             <div key={task.id} className="flex items-center justify-between gap-3 p-3 bg-page-bg rounded-lg">
               <div className="min-w-0">
                 <p className="font-medium text-text-primary text-[13px]">{task.title}</p>
                 <p className="text-[12px] text-text-secondary">
-                  Assignee: {task.assignee_name || 'Unassigned'} • Due: {formatDateTime(task.due_at)}
-                  {task.priority && <> • <span className="capitalize">{task.priority.toLowerCase()}</span></>}
+                  Assignee: {task.assignee_name || 'Unassigned'}
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                {task.status === 'COMPLETED' ? (
+                {task.status === 'completed' ? (
                   taskStatusBadge(task.status)
                 ) : (
                   canManage ? (
@@ -559,21 +502,16 @@ const TasksTab = ({ projectId, tasks, groups, members, canManage, currentUserId,
 };
 
 const TaskForm = ({ projectId, groups, members, fixedGroupId = '', onClose, onDone }) => {
-  const [form, setForm] = useState({ title: '', description: '', priority: 'MEDIUM', due_at: '', group: fixedGroupId, assigned_student: '' });
+  const [form, setForm] = useState({ title: '', group: fixedGroupId, assignee: '' });
   const [busy, setBusy] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
-    const payload = {
-      title: form.title,
-      description: form.description,
-      priority: form.priority,
-      due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
-    };
+    const payload = { title: form.title };
     const group = fixedGroupId || form.group;
     if (group) payload.group = group;
-    if (form.assigned_student) payload.assigned_student = form.assigned_student;
+    if (form.assignee) payload.assignee = form.assignee;
     try {
       await projectsApi.createTask(projectId, payload);
       await onDone();
@@ -595,24 +533,6 @@ const TaskForm = ({ projectId, groups, members, fixedGroupId = '', onClose, onDo
             <label className="fet-label">Title</label>
             <input type="text" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required className="fet-input" />
           </div>
-          <div>
-            <label className="fet-label">Description</label>
-            <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={2} className="fet-input resize-none" />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="fet-label">Priority</label>
-              <select value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} className="fet-select">
-                <option value="LOW">Low</option>
-                <option value="MEDIUM">Medium</option>
-                <option value="HIGH">High</option>
-              </select>
-            </div>
-            <div>
-              <label className="fet-label">Due</label>
-              <input type="datetime-local" value={form.due_at} onChange={(e) => setForm({ ...form, due_at: e.target.value })} className="fet-input" />
-            </div>
-          </div>
           <div className={fixedGroupId ? '' : 'grid grid-cols-2 gap-4'}>
             {!fixedGroupId && (
               <div>
@@ -625,7 +545,7 @@ const TaskForm = ({ projectId, groups, members, fixedGroupId = '', onClose, onDo
             )}
             <div>
               <label className="fet-label">Assignee</label>
-              <select value={form.assigned_student} onChange={(e) => setForm({ ...form, assigned_student: e.target.value })} className="fet-select">
+              <select value={form.assignee} onChange={(e) => setForm({ ...form, assignee: e.target.value })} className="fet-select">
                 <option value="">Unassigned</option>
                 {members.map((m) => <option key={m.id} value={m.student}>{m.student_name}</option>)}
               </select>
@@ -657,14 +577,6 @@ const MilestonesTab = ({ projectId, milestones, canManage, onChanged }) => {
     }
   };
 
-  const toLocal = (iso) => {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '';
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -682,12 +594,12 @@ const MilestonesTab = ({ projectId, milestones, canManage, onChanged }) => {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="font-medium text-text-primary text-[13px]">{ms.title}</p>
-                <p className="text-[12px] text-text-secondary">{ms.description} {ms.due_at && `• Due: ${formatDateTime(ms.due_at)}`}</p>
+                <p className="text-[12px] text-text-secondary">
+                  Progress: {ms.progress}% {ms.due_date && `• Due: ${ms.due_date}`}
+                </p>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0">
-                <span className={`fet-badge ${ms.status === 'COMPLETED' ? 'fet-badge-completed' : ms.status === 'IN_PROGRESS' ? 'fet-badge-pending' : 'fet-badge-inactive'}`}>
-                  {ms.status?.replace('_', ' ') || 'PENDING'}
-                </span>
+                <span className="fet-badge fet-badge-pending">{ms.progress}%</span>
                 {canManage && (
                   <>
                     <button onClick={() => { setEditing(ms); setShowForm(true); }} className="text-[13px] text-primary hover:underline">Edit</button>
@@ -716,7 +628,7 @@ const MilestonesTab = ({ projectId, milestones, canManage, onChanged }) => {
       {showForm && (
         <MilestoneForm
           milestone={editing}
-          initialDue={toLocal(editing?.due_at)}
+          initialDue={editing?.due_date || ''}
           onClose={() => { setShowForm(false); setEditing(null); }}
           onSubmit={submit}
         />
@@ -727,9 +639,8 @@ const MilestonesTab = ({ projectId, milestones, canManage, onChanged }) => {
 
 const MilestoneForm = ({ milestone, initialDue, onClose, onSubmit }) => {
   const [title, setTitle] = useState(milestone?.title || '');
-  const [description, setDescription] = useState(milestone?.description || '');
-  const [due_at, setDueAt] = useState(initialDue || '');
-  const [status, setStatus] = useState(milestone?.status || 'PENDING');
+  const [dueDate, setDueDate] = useState(initialDue || '');
+  const [progress, setProgress] = useState(milestone?.progress || 0);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e) => {
@@ -737,9 +648,8 @@ const MilestoneForm = ({ milestone, initialDue, onClose, onSubmit }) => {
     setBusy(true);
     await onSubmit({
       title,
-      description,
-      due_at: due_at ? new Date(due_at).toISOString() : null,
-      status,
+      due_date: dueDate || null,
+      progress: Number(progress),
     });
     setBusy(false);
   };
@@ -756,22 +666,14 @@ const MilestoneForm = ({ milestone, initialDue, onClose, onSubmit }) => {
             <label className="fet-label">Title</label>
             <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} required className="fet-input" />
           </div>
-          <div>
-            <label className="fet-label">Description</label>
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} className="fet-input resize-none" />
-          </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="fet-label">Due</label>
-              <input type="datetime-local" value={due_at} onChange={(e) => setDueAt(e.target.value)} className="fet-input" />
+              <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className="fet-input" />
             </div>
             <div>
-              <label className="fet-label">Status</label>
-              <select value={status} onChange={(e) => setStatus(e.target.value)} className="fet-select">
-                <option value="PENDING">Pending</option>
-                <option value="IN_PROGRESS">In Progress</option>
-                <option value="COMPLETED">Completed</option>
-              </select>
+              <label className="fet-label">Progress</label>
+              <input type="number" min="0" max="100" value={progress} onChange={(e) => setProgress(e.target.value)} className="fet-input" />
             </div>
           </div>
           <div className="flex justify-end gap-3">
@@ -810,19 +712,26 @@ const DocumentsTab = ({ documents }) => (
   </div>
 );
 
-const ActivityTab = ({ projectId, contributions, onChanged }) => {
+const ActivityTab = ({ projectId, contributions, tasks, groups, currentUserId, onChanged }) => {
   const [showForm, setShowForm] = useState(false);
-  const [description, setDescription] = useState('');
-  const [type, setType] = useState('TASK_COMPLETION');
+  const [taskId, setTaskId] = useState('');
   const [busy, setBusy] = useState(false);
+  const memberGroupIds = groups
+    .filter((group) => group.members?.some((member) => member.student === currentUserId))
+    .map((group) => group.id);
+  const eligibleTasks = tasks.filter(
+    (task) => task.assignee === currentUserId || memberGroupIds.includes(task.group)
+  );
 
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
     try {
-      await projectsApi.createContribution(projectId, { description, contribution_type: type });
-      setDescription('');
-      setType('TASK_COMPLETION');
+      await projectsApi.createContribution(projectId, {
+        evidence_type: 'task',
+        evidence_ref: taskId,
+      });
+      setTaskId('');
       setShowForm(false);
       await onChanged();
     } catch (err) {
@@ -846,10 +755,10 @@ const ActivityTab = ({ projectId, contributions, onChanged }) => {
           <div key={c.id} className="flex items-start justify-between gap-3 p-3 bg-page-bg rounded-lg">
             <div className="min-w-0">
               <p className="text-[13px] font-medium text-text-primary">{c.student_name}</p>
-              <p className="text-[12px] text-text-secondary">{c.description || '(no description)'}</p>
+              <p className="text-[12px] text-text-secondary">Task evidence: {c.evidence_ref}</p>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
-              <span className="fet-badge fet-badge-pending">{c.contribution_type?.replace('_', ' ')}</span>
+              <span className="fet-badge fet-badge-pending">{c.evidence_type?.replace('_', ' ')}</span>
               <span className="text-[11px] text-text-secondary">{new Date(c.created_at).toLocaleDateString()}</span>
             </div>
           </div>
@@ -859,18 +768,15 @@ const ActivityTab = ({ projectId, contributions, onChanged }) => {
       {showForm && (
         <form onSubmit={submit} className="p-4 bg-page-bg rounded-xl space-y-3">
           <div>
-            <label className="fet-label">What did you contribute?</label>
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} required rows={2} className="fet-input resize-none" />
+            <label className="fet-label">Completed project task</label>
+            <select value={taskId} onChange={(e) => setTaskId(e.target.value)} required className="fet-select">
+              <option value="">Select your task</option>
+              {eligibleTasks.map((task) => (
+                <option key={task.id} value={task.id}>{task.title}</option>
+              ))}
+            </select>
           </div>
           <div className="flex items-center gap-3">
-            <select value={type} onChange={(e) => setType(e.target.value)} className="fet-select flex-1">
-              <option value="TASK_COMPLETION">Task Completion</option>
-              <option value="CODE_CONTRIBUTION">Code</option>
-              <option value="DOCUMENTATION">Documentation</option>
-              <option value="RESEARCH">Research</option>
-              <option value="DESIGN">Design</option>
-              <option value="OTHER">Other</option>
-            </select>
             <button type="submit" className="fet-btn-primary" disabled={busy}>Submit</button>
           </div>
         </form>

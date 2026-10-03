@@ -133,10 +133,25 @@ function App() {
     initAuth();
   }, []);
 
-  // Identity lives in React state + SessionProvider now, not localStorage.
-// ProfilePage re-reads the authoritative record itself after saving, so there
-// is nothing to listen for on a profile change.
-useEffect(() => {
+  // Re-read server identity after a profile save so the shell updates too.
+  useEffect(() => {
+    let active = true;
+    const onProfileUpdated = async () => {
+      try {
+        const response = await authApi.me();
+        if (active) setUser(response.data?.data ?? response.data);
+      } catch {
+        // Keep the previous name on transport failure; expiry is handled below.
+      }
+    };
+    window.addEventListener('fet-profile-updated', onProfileUpdated);
+    return () => {
+      active = false;
+      window.removeEventListener('fet-profile-updated', onProfileUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
     const onExpired = () => {
       setIsAuthenticated(false);
       setUser(null);
