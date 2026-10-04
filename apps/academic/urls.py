@@ -7,6 +7,13 @@ app_name = "academic"
 urlpatterns = [
     path("faculties/", views.FacultyListView.as_view(), name="faculty-list"),
     path("departments/", views.DepartmentListView.as_view(), name="department-list"),
+    # Pre-authentication, read-only: the public sign-up form needs the
+    # department list before an account exists.
+    path(
+        "departments/public/",
+        views.PublicDepartmentListView.as_view(),
+        name="department-public-list",
+    ),
     path("courses/", views.CourseListView.as_view(), name="course-list"),
     path("course-offerings/", views.CourseOfferingListCreateView.as_view(), name="offering-list"),
     path("course-offerings/<uuid:pk>/", views.CourseOfferingDetailView.as_view(), name="offering-detail"),
@@ -25,6 +32,11 @@ urlpatterns = [
         "semesters/<uuid:pk>/",
         views.SemesterUpdateView.as_view(),
         name="semester-detail",
+    ),
+    path(
+        "semesters/<uuid:pk>/activate/",
+        views.SemesterActivateView.as_view(),
+        name="semester-activate",
     ),
     # Course enrollment (BR-010..BR-015). The service layer already existed but
     # had no HTTP surface, so the frontend's Enrol/Drop control could never

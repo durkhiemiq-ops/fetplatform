@@ -17,18 +17,26 @@ from core.audit import write_audit_entry
 from .models import User
 from .serializers import (
     ChangeRoleSerializer,
+    LecturerApprovalDecisionSerializer,
     LoginSerializer,
     RegisterSerializer,
+    SelfRegisterSerializer,
     UserSerializer,
 )
 from .services.auth_service import (
     AuthError,
     DuplicateAccountError,
+    IdentityNotFoundError,
     InvalidRoleError,
     SelfRoleAssignmentError,
     UnauthorizedRoleChangeError,
     register_account,
     change_user_role,
+)
+from .services.registration_eligibility import (
+    EligibilityError,
+    resolve_lecturer_approval,
+    resolve_role,
 )
 from .services.email_otp import (
     OTPResult,
@@ -106,6 +114,164 @@ class RegisterView(APIView):
         return _success_response(
             UserSerializer(account).data,
             status.HTTP_201_CREATED,
+        )
+
+
+class SelfRegisterView(APIView):
+    """Public self-registration for students and lecturers.
+
+    One canonical implementation, aliased at ``/accounts/self-register/`` and
+    ``/auth/self-register/`` so the two namespaces never drift.
+
+    The stored role is resolved server-side from ``account_type``
+    (``registration_eligibility.resolve_role``); no request field can grant a
+    role. Lecturer applicants are created ``PENDING`` and hold no academic
+    privileges until an administrator approves them.
+    """
+
+    permission_classes = []
+    authentication_classes = []
+    throttle_classes = [AnonRateThrottle, ScopedRateThrottle]
+    throttle_scope = "register"
+
+    def post(self, request):
+        serializer = SelfRegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        department = data.get("_department")
+        try:
+            account = register_account(
+                email=data["email"],
+                username=self._username_for(data, department),
+                first_name=data["first_name"],
+                last_name=data["last_name"],
+                password=data["password"],
+                AccountModel=User,
+                # Server-owned, never from the payload.
+                role=resolve_role(data["account_type"]),
+                lecturer_approval_status=resolve_lecturer_approval(
+                    data["account_type"]
+                ),
+                department_id=department.pk if department is not None else None,
+                level=data.get("level") or "",
+                matricule=data.get("matricule") or None,
+                staffid=data.get("staffid") or None,
+            )
+        except (DuplicateAccountError, IdentityNotFoundError) as exc:
+            # BR-203: indistinguishable from a generic validation failure so a
+            # caller cannot use this endpoint to enumerate registered addresses.
+            return _error_response(
+                "Registration failed. Please check your details.",
+                "INVALID_DATA",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        except EligibilityError as exc:
+            return _error_response(str(exc), exc.code, status.HTTP_400_BAD_REQUEST)
+        except AuthError as exc:
+            return _error_response(str(exc), "INVALID_DATA", status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:  # noqa: BLE001 - never leak a traceback
+            logger.exception("self-registration failed unexpectedly")
+            return _error_response(
+                "Registration failed. Please check your details.",
+                "INVALID_DATA",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            code = issue_otp(account.email)
+            send_verification_email(account.email, code)
+        except Exception as exc:  # noqa: BLE001 - delivery must not fail signup
+            logger.warning(
+                "verification email dispatch failed for account %s (%s)",
+                account.id,
+                type(exc).__name__,
+            )
+
+        pending = (
+            account.lecturer_approval_status
+            == User.LecturerApproval.PENDING
+        )
+        return _success_response(
+            {
+                "id": str(account.id),
+                "email": account.email,
+                "role": account.role,
+                "lecturer_approval_status": account.lecturer_approval_status,
+                "message": (
+                    "Account created. Verify your email address to continue."
+                ),
+                "lecturer_approval_required": pending,
+            },
+            status.HTTP_201_CREATED,
+        )
+
+    @staticmethod
+    def _username_for(data, department) -> str:
+        """Derive a login identifier server-side.
+
+        Prefers the applicant-supplied matricule/staff number, else falls back
+        to the email. Never trusts a client-chosen username, which would
+        otherwise be a second, unaudited identity claim.
+        """
+        for key in ("matricule", "staffid"):
+            value = str(data.get(key) or "").strip()
+            if value:
+                return value
+        if department is not None:
+            return f"{department.code or 'acct'}-{data['email'].split('@')[0]}"
+        return data["email"].split("@")[0]
+
+
+class LecturerApprovalView(APIView):
+    """Administrator decision on a pending lecturer application.
+
+    Deliberately separate from ``change-role/``: role assignment and teaching
+    authorisation are different acts and conflating them would let an
+    unrelated call silently grant lecturer privileges.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not is_admin_user(request.user):
+            return _error_response(
+                "Only administrators may decide lecturer applications.",
+                "UNAUTHORIZED",
+                status.HTTP_403_FORBIDDEN,
+            )
+        applicant = User.objects.filter(pk=pk).first()
+        # §25: a missing applicant and a non-applicant are the same shape.
+        if applicant is None or applicant.lecturer_approval_status is None:
+            return _error_response(
+                "Lecturer application not found.", "NOT_FOUND", status.HTTP_404_NOT_FOUND
+            )
+        serializer = LecturerApprovalDecisionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        previous = applicant.lecturer_approval_status
+        applicant.lecturer_approval_status = (
+            User.LecturerApproval.APPROVED
+            if serializer.validated_data["decision"] == "approve"
+            else User.LecturerApproval.REJECTED
+        )
+        applicant.save(update_fields=["lecturer_approval_status"])
+        write_audit_entry(
+            action="lecturer_application_decided",
+            resource_type="account",
+            resource_id=applicant.pk,
+            actor_id=request.user.pk,
+            old_value={"lecturer_approval_status": previous},
+            new_value={
+                "lecturer_approval_status": applicant.lecturer_approval_status
+            },
+            details={"reason": serializer.validated_data.get("reason") or ""},
+        )
+        return _success_response(
+            {
+                "id": str(applicant.pk),
+                "lecturer_approval_status": applicant.lecturer_approval_status,
+            }
         )
 
 

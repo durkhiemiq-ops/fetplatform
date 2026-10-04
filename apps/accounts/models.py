@@ -46,6 +46,20 @@ class User(AbstractBaseUser, PermissionsMixin):
         LECTURER = "LECTURER", "Lecturer"
         ADMINISTRATOR = "ADMINISTRATOR", "Administrator"
 
+    class LecturerApproval(models.TextChoices):
+        """Teaching-staff authorisation for self-registered applicants.
+
+        There is no authoritative staff registry in this system, so a lecturer
+        who signs themselves up cannot be verified automatically. They are
+        created PENDING and an administrator must approve them before teaching
+        privileges apply. NULL (not applicable) is the state of every account
+        that did not apply as teaching staff.
+        """
+
+        PENDING = "PENDING", "Pending approval"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True, db_index=True)
     username = models.CharField(unique=True, max_length=150)
@@ -102,6 +116,20 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    lecturer_approval_status = models.CharField(
+        max_length=16,
+        choices=LecturerApproval.choices,
+        null=True,
+        blank=True,
+        default=None,
+        help_text=(
+            "Set only for accounts that applied as teaching staff. NULL means the "
+            "account does not participate in lecturer approval at all, which is "
+            "the state of every pre-existing row. Deliberately separate from "
+            "is_email_verified: that proves control of an address, this field "
+            "authorises acting as teaching staff."
+        ),
+    )
 
     objects = UserManager()
 

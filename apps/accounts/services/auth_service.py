@@ -58,6 +58,10 @@ class InvalidRoleError(AuthError):
     """Raised when a role is missing or not supported by the account model."""
 
 
+class WeakPasswordError(AuthError):
+    """The submitted password failed the configured validators."""
+
+
 class InvalidCurrentPasswordError(AuthError):
     """Raised when the current credential does not match."""
 
@@ -99,13 +103,30 @@ def register_account(
     last_name: str,
     password: str,
     AccountModel: type[AccountModelLike],
+    role: Optional[str] = None,
+    lecturer_approval_status: Optional[str] = None,
+    department_id: Any = None,
+    level: str = "",
+    matricule: Optional[str] = None,
+    staffid: Optional[str] = None,
 ) -> AccountModelLike:
-    """Create one active account using the server-controlled STUDENT role.
+    """Create one account with a **server-resolved** role.
 
     BR-001: reject duplicate active accounts.
     BR-002: registrations default to STUDENT.
     BR-003: role is set server-side, never from client input.
     BR-170: reject missing required fields.
+
+    ``role`` is a *server* decision. Callers pass the output of
+    ``registration_eligibility.resolve_role``, which derives it from the
+    requested account type and cannot yield ADMINISTRATOR. The public
+    serializers never expose a role field, so there is no path from the
+    request body to this argument.
+
+    ``lecturer_approval_status`` is likewise server-owned: a self-registering
+    lecturer is created PENDING and holds no academic privileges until an
+    administrator approves them. It is ``None`` for every other account,
+    including those created by an administrator or a roster import.
     """
     if AccountModel is None:
         raise ConfigurationError("AccountModel is required")
@@ -132,7 +153,36 @@ def register_account(
             f"An active account already exists for {email}"
         )
 
-    # BR-002, BR-003: create with server-controlled STUDENT role only.
+    # BR-002/BR-203 + AUTH_PASSWORD_VALIDATORS: enforced here, in the one place
+    # every registration path passes through. It previously lived only in
+    # RegisterSerializer, so the self-registration serializer could bypass it
+    # and accept "12345678". The candidate carries the submitted identity so
+    # UserAttributeSimilarityValidator can compare against it.
+    candidate = None
+    if hasattr(AccountModel, "objects"):
+        try:
+            candidate = AccountModel(
+                email=str(email).strip().lower(),
+                username=str(username).strip().lower(),
+                first_name=str(first_name).strip(),
+                last_name=str(last_name).strip(),
+            )
+        except Exception:  # pragma: no cover - Protocol models without kwargs
+            candidate = None
+    try:
+        validate_password(password, user=candidate)
+    except DjangoValidationError as exc:
+        raise WeakPasswordError(" ".join(exc.messages)) from exc
+
+    # BR-002, BR-003: the role is whatever the server resolved, never a client
+    # field. A caller that omits it still gets STUDENT.
+    resolved_role = str(role).strip().upper() if role else DEFAULT_ROLE
+    extras = {
+        "department_id": department_id,
+        "level": str(level or "").strip().upper(),
+        "matricule": str(matricule).strip().upper() if matricule else None,
+        "staffid": str(staffid).strip().upper() if staffid else None,
+    }
     # The actual User model's create_user handles password hashing.
     try:
         account = manager.create_user(
@@ -141,6 +191,12 @@ def register_account(
             first_name=str(first_name).strip(),
             last_name=str(last_name).strip(),
             password=password,
+            role=resolved_role,
+            **{
+                key: value
+                for key, value in extras.items()
+                if value not in (None, "")
+            },
         )
     except AttributeError:
         # Fallback for Protocol-based callers that provide custom models.
@@ -149,12 +205,21 @@ def register_account(
         account.username = str(username).strip().lower()
         account.first_name = str(first_name).strip()
         account.last_name = str(last_name).strip()
-        account.role = DEFAULT_ROLE
+        account.role = resolved_role
         if hasattr(account, "is_active"):
             account.is_active = True
         if hasattr(account, "set_password"):
             account.set_password(password)
         account.save()
+
+    # Lecturer approval is a separate concern from email verification and is
+    # only ever set by the server: PENDING for a self-registering applicant,
+    # None (not applicable) for everyone else.
+    if lecturer_approval_status is not None and hasattr(
+        account, "lecturer_approval_status"
+    ):
+        account.lecturer_approval_status = lecturer_approval_status
+        account.save(update_fields=["lecturer_approval_status"])
 
     return account
 

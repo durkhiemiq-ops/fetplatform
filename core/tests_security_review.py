@@ -52,7 +52,19 @@ class SecurityBoundaryReviewTests(TestCase):
         cache.clear()
         self.client = APIClient()
 
-    def test_public_registration_aliases_cannot_create_accounts(self):
+    def test_public_registration_never_creates_a_privileged_account(self):
+        """Public registration exists again, but it must never mint privilege.
+
+        This previously asserted the routes were absent entirely, which
+        contradicted the API specification ("Creates a new account where
+        self-registration is allowed"). Self-registration is now restored, so
+        the meaningful boundary is narrower and stronger: an anonymous caller
+        can create an account, but never an administrator, and never a lecturer
+        with privileges. Lecturer applicants land PENDING until an
+        administrator decides.
+
+        Exercised against all three aliases so the namespaces cannot drift.
+        """
         for index, path in enumerate((
             "/api/v1/accounts/register/", "/api/v1/auth/register/",
             "/api/v1/auth/self-register/",
@@ -60,12 +72,28 @@ class SecurityBoundaryReviewTests(TestCase):
             with self.subTest(path=path):
                 email = f"review-public-{index}@example.test"
                 response = self.client.post(path, {
+                    "account_type": "lecturer",
                     "email": email, "username": f"review-public-{index}",
                     "first_name": "Public", "last_name": "Registrant",
                     "password": "UnrelatedSecret!5938",
+                    "staffid": f"STF-REVIEW-{index}",
+                    # The whole point: a forged privileged role in the payload.
+                    "role": "ADMINISTRATOR",
+                    "lecturer_approval_status": "APPROVED",
                 }, format="json")
-                self.assertIn(response.status_code, (403, 404))
-                self.assertFalse(User.objects.filter(email=email).exists())
+                self.assertIn(response.status_code, (201, 400))
+
+                account = User.objects.filter(email=email).first()
+                if account is None:
+                    continue  # refused outright, which is also safe
+                self.assertNotEqual(account.role, User.Role.ADMINISTRATOR)
+                self.assertFalse(account.is_staff)
+                self.assertFalse(account.is_superuser)
+                if account.role == User.Role.LECTURER:
+                    self.assertEqual(
+                        account.lecturer_approval_status,
+                        User.LecturerApproval.PENDING,
+                    )
 
     def test_login_rejects_cross_origin_request_without_csrf_token(self):
         client = APIClient(enforce_csrf_checks=True)

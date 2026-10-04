@@ -50,13 +50,32 @@ def normalize_role(value: Any) -> str:
 
 
 def is_authorized_academic_user(user: Any) -> bool:
-    """Return whether the subject is an authorized academic user."""
+    """Return whether the subject is an authorized academic user.
+
+    Lecturer approval gate
+    ---------------------
+    There is no authoritative staff registry in this system, so a lecturer who
+    registers themselves is created with ``lecturer_approval_status = PENDING``
+    and must be approved by an administrator before they may act as teaching
+    staff. That state is enforced here, in the one predicate every
+    lecturer-only endpoint already calls, so a pending applicant is refused
+    server-side no matter what the frontend renders.
+
+    ``None`` means "not applicable" and is the value on every pre-existing
+    account, including lecturers created by an administrator or imported from a
+    roster. Those are unaffected: only an explicit PENDING/REJECTED value
+    withholds academic privileges.
+    """
     if user is None:
         return False
     role = normalize_role(getattr(user, "role", None))
-    if role in ACADEMIC_ROLES:
-        return True
-    return False
+    if role not in ACADEMIC_ROLES:
+        return False
+    if role == "lecturer":
+        approval = getattr(user, "lecturer_approval_status", None)
+        if approval is not None and str(approval).strip().upper() != "APPROVED":
+            return False
+    return True
 
 
 def is_admin_user(user: Any) -> bool:

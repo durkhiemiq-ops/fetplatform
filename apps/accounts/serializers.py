@@ -3,6 +3,82 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import User
+from .services.registration_eligibility import (
+    EligibilityError,
+    normalize_account_type,
+    validate_department,
+    validate_identity_free,
+    validate_level,
+)
+
+
+class SelfRegisterSerializer(serializers.Serializer):
+    """Public self-registration for students and lecturers.
+
+    There is **no ``role`` field**, by design. A client cannot name its own
+    privilege level because it cannot name one at all: ``account_type`` is a
+    request, and ``registration_eligibility.resolve_role`` turns it into a role
+    the server has already decided on. Sending ``role=ADMINISTRATOR`` is
+    therefore not ignored -- it never binds to anything, because no attribute
+    on this serializer reads it.
+
+    BR-002/BR-003: the stored role is server-owned.
+    """
+
+    account_type = serializers.ChoiceField(choices=["student", "lecturer"])
+    email = serializers.EmailField()
+    first_name = serializers.CharField(max_length=150)
+    last_name = serializers.CharField(max_length=150)
+    password = serializers.CharField(write_only=True, min_length=8)
+    department = serializers.UUIDField(required=False, allow_null=True, default=None)
+    level = serializers.CharField(required=False, allow_blank=True, default="")
+    matricule = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    staffid = serializers.CharField(max_length=50, required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        try:
+            attrs["account_type"] = normalize_account_type(attrs.get("account_type"))
+            is_student = attrs["account_type"] == "student"
+
+            # Students are tied to a department and level because both feed
+            # course eligibility. Lecturers are not, at registration time.
+            department = validate_department(
+                attrs.get("department"), required=is_student
+            )
+            attrs["_department"] = department
+            attrs["level"] = validate_level(attrs.get("level"), required=is_student)
+
+            if is_student and not str(attrs.get("matricule") or "").strip():
+                raise serializers.ValidationError(
+                    {"matricule": "Matricule number is required for students."}
+                )
+            if not is_student and not str(attrs.get("staffid") or "").strip():
+                raise serializers.ValidationError(
+                    {"staffid": "Staff number is required for lecturers."}
+                )
+
+            validate_identity_free(
+                matricule=attrs.get("matricule"),
+                staffid=attrs.get("staffid"),
+            )
+        except EligibilityError as exc:
+            # Eligibility rejections are validation outcomes, not server
+            # faults: letting the domain error escape here would surface as a
+            # 500 and leak the exception envelope shape.
+            raise serializers.ValidationError({"account_type": str(exc)}) from exc
+
+        # A forged role in the payload must not survive into the service call.
+        attrs.pop("role", None)
+        return attrs
+
+
+class LecturerApprovalDecisionSerializer(serializers.Serializer):
+    """Administrator decision on a pending lecturer application."""
+
+    decision = serializers.ChoiceField(choices=["approve", "reject"])
+    reason = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=500
+    )
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -103,7 +179,7 @@ class UserSerializer(serializers.ModelSerializer):
     Self-service is therefore limited to genuinely self-owned profile text.
     Institution-assigned identity is changed by an administrator, roles have
     their own audited endpoint (POST /accounts/change-role/, BR-002/BR-210),
-    and email changes require re-verification (BR-209) — none of which may be
+    and email changes require re-verification (BR-209) â€” none of which may be
     reached through here.
     """
 
@@ -124,6 +200,7 @@ class UserSerializer(serializers.ModelSerializer):
             "created_at",
             "is_email_verified",
             "must_change_password",
+            "lecturer_approval_status",
         ]
         # Only first_name / last_name are self-writable. Everything else is
         # institution-assigned identity or a security-relevant flag.

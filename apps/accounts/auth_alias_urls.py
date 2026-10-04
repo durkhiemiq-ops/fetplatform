@@ -94,6 +94,12 @@ urlpatterns = [
     path("login/", views.LoginView.as_view(), name="auth-login"),
     path("logout/", views.LogoutView.as_view(), name="auth-logout"),
     path("me/", views.CurrentUserView.as_view(), name="auth-me"),
+    # Thin aliases onto the single canonical SelfRegisterView, so the two
+    # namespaces can never drift apart in behaviour.
+    path("register/", views.SelfRegisterView.as_view(), name="auth-register"),
+    path(
+        "self-register/", views.SelfRegisterView.as_view(), name="auth-self-register"
+    ),
     path("verify-email/", views.VerifyEmailView.as_view(), name="auth-verify-email"),
     path("change-password/", ChangePasswordView.as_view(), name="auth-change-password"),
     path("refresh/", SessionRefreshView.as_view(), name="auth-refresh"),

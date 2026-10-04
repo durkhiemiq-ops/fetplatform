@@ -30,6 +30,13 @@ from .serializers import (
     SemesterSerializer,
     StudentRegistrationSerializer,
 )
+from .services.calendar_service import (
+    SemesterActivationConflictError,
+    SemesterNotFoundError,
+    activate_semester,
+    create_semester,
+    update_semester,
+)
 from .services.enrollment_service import (
     AlreadyEnrolledError,
     CourseNotFoundError,
@@ -73,6 +80,34 @@ class DepartmentListView(APIView):
         return _success_response(DepartmentSerializer(departments, many=True).data)
 
 
+class PublicDepartmentListView(APIView):
+    """Department names and codes for the public sign-up form.
+
+    Anonymous, and deliberately narrow: an unauthenticated caller may read the
+    department list only because they cannot choose a department at
+    registration without it (the sign-up form populates this select before any
+    account exists). Only ``id``, ``name``, ``code`` and the faculty name are
+    returned -- no staff, no enrolment counts, no course or student data.
+    """
+
+    permission_classes = []
+    authentication_classes = []
+
+    def get(self, request):
+        rows = Department.objects.select_related("faculty").order_by("name")
+        return _success_response(
+            [
+                {
+                    "id": str(row.pk),
+                    "name": row.name,
+                    "code": row.code or "",
+                    "faculty": row.faculty.name if row.faculty_id else "",
+                }
+                for row in rows
+            ]
+        )
+
+
 class CourseListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -105,6 +140,13 @@ class SchoolYearListCreateView(APIView):
         serializer = SchoolYearSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         year = SchoolYear.objects.create(**serializer.validated_data)
+        write_audit_entry(
+            action="school_year_created",
+            resource_type="school_year",
+            resource_id=year.id,
+            actor_id=request.user.id,
+            new_value=SchoolYearSerializer(year).data,
+        )
         return _success_response(SchoolYearSerializer(year).data, 201)
 
 
@@ -122,7 +164,10 @@ class SemesterListCreateView(APIView):
             )
         serializer = SemesterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        semester = Semester.objects.create(**serializer.validated_data)
+        semester = create_semester(
+            data=serializer.validated_data,
+            actor_id=request.user.id,
+        )
         return _success_response(SemesterSerializer(semester).data, 201)
 
 
@@ -141,7 +186,28 @@ class SemesterUpdateView(APIView):
             semester, data=request.data, partial=True
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save()  # model.save() keeps at most one is_current semester
+        semester = update_semester(
+            semester_id=semester.pk,
+            changes=serializer.validated_data,
+            actor_id=request.user.id,
+        )
+        return _success_response(SemesterSerializer(semester).data)
+
+
+class SemesterActivateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not is_admin_user(request.user):
+            return _error_response(
+                "UNAUTHORIZED", "Only administrators activate semesters.", 403
+            )
+        try:
+            semester = activate_semester(semester_id=pk, actor_id=request.user.id)
+        except SemesterNotFoundError:
+            return _error_response("NOT_FOUND", "Semester not found.", 404)
+        except SemesterActivationConflictError as exc:
+            return _error_response("CONFLICT", str(exc), 409)
         return _success_response(SemesterSerializer(semester).data)
 
 
