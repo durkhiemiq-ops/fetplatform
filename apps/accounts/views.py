@@ -36,6 +36,7 @@ from .services.email_otp import (
     send_verification_email,
     verify_otp,
 )
+from .services.roster_service import RosterError, import_student_roster
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,29 @@ class UserListView(APIView):
 
         users = User.objects.all()
         return _success_response(UserSerializer(users, many=True).data)
+
+
+class RosterUploadView(APIView):
+    """Provision student accounts from a strict administrator-supplied CSV."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if not is_admin_user(request.user):
+            return _error_response(
+                "Only administrators may upload a student roster.",
+                "UNAUTHORIZED",
+                status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            result = import_student_roster(request.FILES.get("file"), actor=request.user)
+        except RosterError as exc:
+            return _error_response(str(exc), "INVALID_ROSTER", status.HTTP_400_BAD_REQUEST)
+
+        response = _success_response(result, status.HTTP_201_CREATED)
+        response["Cache-Control"] = "no-store, max-age=0"
+        response["Pragma"] = "no-cache"
+        return response
 
 
 class VerifyEmailView(APIView):

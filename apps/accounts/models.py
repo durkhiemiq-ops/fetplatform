@@ -90,6 +90,10 @@ class User(AbstractBaseUser, PermissionsMixin):
         null=True,
         blank=True,
     )
+    must_change_password = models.BooleanField(
+        default=False,
+        help_text="True only while an institution-issued temporary password is active.",
+    )
     level = models.CharField(
         max_length=10,
         blank=True,

@@ -123,6 +123,7 @@ class UserSerializer(serializers.ModelSerializer):
             "level",
             "created_at",
             "is_email_verified",
+            "must_change_password",
         ]
         # Only first_name / last_name are self-writable. Everything else is
         # institution-assigned identity or a security-relevant flag.
@@ -137,6 +138,7 @@ class UserSerializer(serializers.ModelSerializer):
             "department",
             "level",
             "is_email_verified",
+            "must_change_password",
             "created_at",
         ]
 

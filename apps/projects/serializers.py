@@ -198,7 +198,7 @@ class TaskCreateSerializer(serializers.Serializer):
     # belonged to, because the project id is not in the payload. It therefore
     # accepted a group owned by an unrelated project (IDOR). Ownership is
     # now enforced project-scoped in the service, which does receive the
-    # project, and it raises a 403 for both "no such group" and "group owned
+    # project, and it raises a 404 for both "no such group" and "group owned
     # by another project" so this endpoint is not a group-id oracle.
 
 

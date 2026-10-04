@@ -32,9 +32,12 @@ CACHES = {
 # Opt into the real Redis container (fetplatform-redis) to exercise the
 # production cache path locally — QR tokens, OTP codes, DRF throttles, and
 # the repeated-failure counters all run their Redis/Lua branches:
-#   PowerShell:  $env:USE_REDIS_CACHE = "1"
+#   PowerShell:  $env:DEV_USE_REDIS_CACHE = "1"
 #   then run manage.py / manage.py test as usual.
-if os.environ.get("USE_REDIS_CACHE", "").lower() in {"1", "true", "yes"}:
+# Use a development-only switch here. Production's USE_REDIS_CACHE may be
+# present in backend/.env and must not silently turn the isolated test command
+# into an infrastructure-dependent run.
+if os.environ.get("DEV_USE_REDIS_CACHE", "").lower() in {"1", "true", "yes"}:
     CACHES = {
         "default": {
             "BACKEND": "django_redis.cache.RedisCache",

@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.urls import include, path
+from apps.accounts.views import RosterUploadView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -10,6 +11,11 @@ urlpatterns = [
         include(("apps.academic.urls", "academic_flat"), namespace="academic-flat"),
     ),
     path("api/v1/accounts/", include("apps.accounts.urls")),
+    path(
+        "api/v1/admin/roster/upload/",
+        RosterUploadView.as_view(),
+        name="roster-upload",
+    ),
     # Alias for the FET-official client's /api/v1/auth/* paths. Same views.
     path("api/v1/auth/", include("apps.accounts.auth_alias_urls")),
     path("api/v1/attendance/", include("apps.attendance.urls")),

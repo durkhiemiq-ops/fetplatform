@@ -18,6 +18,7 @@ class Faculty(models.Model):
 
 class Department(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code = models.CharField(max_length=30, unique=True, null=True, blank=True)
     name = models.CharField(max_length=255)
     faculty = models.ForeignKey(
         Faculty,

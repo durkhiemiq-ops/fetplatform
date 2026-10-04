@@ -3,11 +3,9 @@
 Why this module exists
 ----------------------
 `config.settings` calls ``load_dotenv()`` at import time, so a developer's
-git-ignored ``backend/.env`` leaks into the test process.  ``settings_dev``
-then honours ``USE_REDIS_CACHE`` **after** its LocMem default
-(``settings_dev.py:37-43``), so a local ``.env`` containing
-``USE_REDIS_CACHE=1`` silently replaces the cache backend the suite runs
-against.
+git-ignored ``backend/.env`` is visible to derived settings. ``settings_dev``
+now requires the explicit development-only ``DEV_USE_REDIS_CACHE`` switch;
+this module additionally pins LocMem so even that opt-in cannot alter tests.
 
 That is not cosmetic.  The cache backend changes observable API behaviour:
 

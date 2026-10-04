@@ -16,6 +16,10 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol
 
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+
 from core.academic_access import (
     ADMIN_ROLES,
     ROLE_STUDENT,
@@ -52,6 +56,14 @@ class SelfRoleAssignmentError(AuthError):
 
 class InvalidRoleError(AuthError):
     """Raised when a role is missing or not supported by the account model."""
+
+
+class InvalidCurrentPasswordError(AuthError):
+    """Raised when the current credential does not match."""
+
+
+class PasswordPolicyError(AuthError):
+    """Raised when a replacement credential violates password policy."""
 
 
 class AccountModelLike(Protocol):
@@ -145,6 +157,42 @@ def register_account(
         account.save()
 
     return account
+
+
+def change_account_password(*, account: Any, current_password: str, new_password: str):
+    """Atomically replace a password and clear an institution-issued lock."""
+    if account is None or not new_password:
+        raise PasswordPolicyError("A new password is required.")
+
+    # Django's session middleware exposes request.user as SimpleLazyObject;
+    # _meta.model resolves the concrete custom user without trusting a caller-
+    # supplied model class.
+    model = account._meta.model
+    with transaction.atomic():
+        locked = model.objects.select_for_update().get(pk=account.pk)
+        if not locked.check_password(current_password):
+            raise InvalidCurrentPasswordError("Current password is incorrect.")
+        if locked.check_password(new_password):
+            raise PasswordPolicyError(
+                "The new password must differ from the current password."
+            )
+        try:
+            validate_password(new_password, locked)
+        except DjangoValidationError as exc:
+            raise PasswordPolicyError(" ".join(exc.messages)) from exc
+
+        was_forced = locked.must_change_password
+        locked.set_password(new_password)
+        locked.must_change_password = False
+        locked.save(update_fields=["password", "must_change_password"])
+        write_audit_entry(
+            action="password_changed",
+            resource_type="account",
+            resource_id=locked.pk,
+            actor_id=locked.pk,
+            details={"cleared_temporary_password": was_forced},
+        )
+    return locked
 
 
 def change_user_role(
