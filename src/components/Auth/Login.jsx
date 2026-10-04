@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { authApi } from '../../lib/auth';
 import { Eye, EyeOff, ArrowRight, GraduationCap, Shield, BookOpen } from 'lucide-react';
 
-const Login = ({ onLogin }) => {
+const Login = ({ onLogin, onSwitchToSignUp }) => {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -134,8 +134,8 @@ const Login = ({ onLogin }) => {
           </form>
 
           <p className="text-center mt-6 text-[13px] text-text-secondary">
-            Accounts are provisioned by the institution. Contact your registrar or
-            administrator if you need access.
+            Don&apos;t have an account?{' '}
+            <button type="button" onClick={onSwitchToSignUp} className="text-primary font-semibold hover:opacity-80 transition-opacity">Register</button>
           </p>
 
           {/* Demo Accounts */}

@@ -9,6 +9,7 @@ import StudentDashboard from './components/Dashboard/StudentDashboard';
 import LecturerDashboard from './components/Dashboard/LecturerDashboard';
 import CoordinatorDashboard from './components/Dashboard/CoordinatorDashboard';
 import Login from './components/Auth/Login';
+import SignUp from './components/Auth/SignUp';
 import ChangePassword from './components/Auth/ChangePassword';
 import ProfilePage from './components/Profile/ProfilePage';
 import AttendanceDashboard from './components/Attendance/AttendanceDashboard';
@@ -111,6 +112,7 @@ const DashboardRoutes = ({ user }) => (
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState(null);
+  const [showSignUp, setShowSignUp] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -191,7 +193,12 @@ function App() {
   }
 
   if (!isAuthenticated) {
-    return <Login onLogin={handleLogin} />;
+    // Public self-registration. Success is NOT a login: the account must verify
+    // its email first, so the callback never establishes a session here.
+    if (showSignUp) {
+      return <SignUp onSwitchToLogin={() => setShowSignUp(false)} />;
+    }
+    return <Login onLogin={handleLogin} onSwitchToSignUp={() => setShowSignUp(true)} />;
   }
 
   return (
