@@ -4,9 +4,9 @@ import { SectionHeader, Card, CardBody, CardHead, Callout, DataTable, Pill } fro
 import { rosterApi, ROSTER_COLUMNS } from '../../lib/roster';
 import { errorMessage } from '../../lib/enrollment';
 
-const sampleCsv = `${ROSTER_COLUMNS.join(',')},date_of_birth
-FE24B001,Amina,Mbeki,amina.mbeki@fet.edu,200,CS,2005-03-14
-FE24B002,Thabo,Ndlovu,thabo.ndlovu@fet.edu,200,CS,2004-11-02
+const sampleCsv = `${ROSTER_COLUMNS.join(',')}
+FE24B001,Amina,Mbeki,amina.mbeki@fet.edu,200,CS
+FE24B002,Thabo,Ndlovu,thabo.ndlovu@fet.edu,200,CS
 `;
 
 const RosterUpload = () => {
@@ -76,7 +76,6 @@ const RosterUpload = () => {
 
       <Callout tone="in">
         Required columns: <b className="num">{ROSTER_COLUMNS.join(', ')}</b>.
-        Optional: <b className="num">date_of_birth</b> (YYYY-MM-DD).
         Re-uploading a row that already exists updates the profile and leaves the
         existing password alone, so this is safe to run again.
       </Callout>

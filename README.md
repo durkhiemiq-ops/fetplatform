@@ -13,9 +13,10 @@ and some existing payloads differ. Screen availability does not establish that
 the workflow is implemented or verified end to end. See
 [the implementation plan](../docs/IMPLEMENTATION_PLAN.md) for the staged work.
 
-The current signup flow also fabricates a local account and stores its password;
-that frontend authentication defect remains scheduled for repair. Local browser
-state must not establish identity, role, enrollment, or other domain authority.
+Public signup is removed. Administrators provision students through roster CSV;
+the backend fixes the role to `STUDENT`, issues a one-time password, and blocks
+application access until the student replaces it. Local browser state never
+establishes identity, role, enrollment, or other domain authority.
 
 ## Local setup
 
@@ -26,12 +27,10 @@ rtk proxy npm install
 rtk proxy npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The shared axios client reads
-`VITE_API_BASE` and defaults to `http://localhost:8000`; it appends `/api/v1`.
-Set the backend origin, without `/api/v1`, in the ignored frontend `.env` if an
-override is needed. Frontend environment variables are public client settings;
-do not put secrets in them. Vite also proxies `/api` to `http://localhost:8000`,
-although the default axios URL accesses the backend directly.
+Open [http://localhost:3000](http://localhost:3000). In development the shared
+axios client uses relative `/api/v1` URLs, so Vite proxies `/api` to
+`http://localhost:8000`. Production may set `VITE_API_BASE`; frontend environment
+variables are public client settings, so never put secrets in them.
 
 The backend requires system Python 3.14 on this machine; its virtual environment
 interpreter is blocked by Application Control. With the ignored backend `.env`
@@ -44,9 +43,10 @@ rtk proxy python manage.py runserver 127.0.0.1:8000
 
 `manage.py` defaults to `config.settings`, the real PostgreSQL/Redis stack.
 `config.settings_dev` is for isolated SQLite testing and local runs; it still
-imports base settings and requires a secret key. Its cache uses Redis when
-`USE_REDIS_CACHE` is enabled, otherwise local memory. Never print or commit `.env`
-contents. Demo seeding is not part of the standard startup procedure.
+imports base settings and requires a secret key. Its cache uses Redis only when
+`DEV_USE_REDIS_CACHE` is explicitly enabled, otherwise local memory. Never print
+or commit `.env` contents. Demo seeding is not part of the standard startup
+procedure.
 
 ## Authentication and API boundary
 

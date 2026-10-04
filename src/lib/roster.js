@@ -21,9 +21,8 @@ export const rosterApi = {
   upload: async (file) => {
     const formData = new FormData();
     formData.append('file', file);
-    const res = await api.post('/admin/roster/upload/', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    // Let the browser set Content-Type so the multipart boundary is present.
+    const res = await api.post('/admin/roster/upload/', formData);
     // Every 2xx is wrapped as { success, data } by SuccessRenderer.
     const body = res?.data;
     return body && typeof body === 'object' && 'data' in body ? body.data : body;

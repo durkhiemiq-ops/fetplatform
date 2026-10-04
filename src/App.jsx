@@ -198,7 +198,7 @@ function App() {
     <SessionProvider user={user} isAuthenticated={isAuthenticated}>
       <ThemeProvider>
         <Router>
-          <Shell user={user} onLogout={handleLogout} />
+          <Shell user={user} onLogout={handleLogout} onUserChanged={setUser} />
         </Router>
       </ThemeProvider>
     </SessionProvider>
@@ -206,8 +206,24 @@ function App() {
 }
 
 // Split out so it renders *inside* SessionProvider and can call useSession().
-function Shell({ user, onLogout }) {
+function Shell({ user, onLogout, onUserChanged }) {
   const { userName, role } = useSession();
+
+  if (user?.must_change_password) {
+    return (
+      <div className="min-h-screen bg-page-bg p-4 md:p-8">
+        <div className="mx-auto max-w-2xl">
+          <Routes>
+            <Route
+              path="/change-password"
+              element={<ChangePassword user={user} forced onChanged={onUserChanged} />}
+            />
+            <Route path="*" element={<Navigate to="/change-password" replace />} />
+          </Routes>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container flex h-screen bg-page-bg">
@@ -216,7 +232,10 @@ function Shell({ user, onLogout }) {
         <Header user={user} onLogout={onLogout} />
         <main className="flex-1 overflow-y-auto p-4 md:p-6">
           <Routes>
-            <Route path="/change-password" element={<ChangePassword user={user} />} />
+            <Route
+              path="/change-password"
+              element={<ChangePassword user={user} onChanged={onUserChanged} />}
+            />
             <Route path="*" element={<DashboardRoutes user={user} />} />
           </Routes>
         </main>

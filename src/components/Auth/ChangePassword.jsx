@@ -11,7 +11,7 @@ const RULES = [
   'Given to you once by an administrator, never reused.',
 ];
 
-const ChangePassword = ({ user, forced = false }) => {
+const ChangePassword = ({ user, forced = false, onChanged }) => {
   const navigate = useNavigate();
   const [form, setForm] = useState({ current: '', next: '', confirm: '' });
   const [busy, setBusy] = useState(false);
@@ -36,11 +36,13 @@ const ChangePassword = ({ user, forced = false }) => {
       });
       setDone(true);
       setForm({ current: '', next: '', confirm: '' });
-      // Re-read the record from the server so nothing stale is shown. There is
-      // no server-side forced-change flag today (see the note in App.jsx).
+      // Re-read the server-owned flag before exposing the rest of the shell.
       try {
-        await authApi.me();
-      } catch { /* the redirect below re-validates the session anyway */ }
+        const response = await authApi.me();
+        const refreshedUser = response.data?.data ?? response.data;
+        onChanged?.(refreshedUser);
+        if (forced) navigate('/', { replace: true });
+      } catch { /* keep the gate closed until server identity can be refreshed */ }
     } catch (err) {
       setError(errorMessage(err, 'Could not change your password.'));
     } finally {
