@@ -62,20 +62,19 @@ export const learningApi = {
   getCourse: (offeringId) => toData(api.get(`/course-offerings/${offeringId}/`)),
   // Materials for a course offering
   getMaterials: (offeringId) => toData(api.get(`/course-offerings/${offeringId}/materials/`)),
-  createMaterial: (data) => toData(api.post(`/course-offerings/${data.course_offering}/materials/`, data)),
+  createMaterial: ({ course_offering, ...data }) =>
+    toData(api.post(`/course-offerings/${course_offering}/materials/`, data)),
   updateMaterial: (materialId, data) => toData(api.patch(`/materials/${materialId}/`, data)),
   deleteMaterial: (materialId) => api.delete(`/materials/${materialId}/`),
   // Upload the raw file first (POST /files/), then attach the returned id to a material.
-  uploadFile: async (file) => {
+  uploadFile: async (file, offeringId) => {
     const formData = new FormData();
     formData.append('file', file);
-    const res = await api.post('/files/', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
+    formData.append('course_offering', offeringId);
+    const res = await api.post('/files/', formData);
     const body = res?.data;
     return body && typeof body === 'object' && 'data' in body ? body.data : body;
   },
-  getDownloadUrl: (fileId) => `${api.defaults.baseURL}/files/${fileId}/`,
   // Authenticated download with the API client's error handling.
   downloadFile: (fileId) => downloadBlob(`/files/${fileId}/`, `download-${fileId}`),
   // Assignments (teacher sets due date, late policy, submission limit).
@@ -95,6 +94,11 @@ export const learningApi = {
   createAssessment: (offeringId, data) => toData(api.post(`/course-offerings/${offeringId}/assessments/`, data)),
   getAssessment: (assessmentId) => toData(api.get(`/assessments/${assessmentId}/`)),
   updateAssessment: (assessmentId, data) => toData(api.patch(`/assessments/${assessmentId}/`, data)),
+  // Publishing is its own action on the sheet, not a status field on
+  // `/assessments/<id>/` (that alias routes PATCH to the released-results
+  // serializer, which only knows score/private_notes/released).
+  publishSheet: (sheetId, status) =>
+    toData(api.patch(`/assessment-sheets/${sheetId}/publish/`, { status })),
   deleteAssessment: (assessmentId) => api.delete(`/assessments/${assessmentId}/`),
   saveMarks: (assessmentId, marks) => toData(api.put(`/assessments/${assessmentId}/marks/`, { marks })),
   raiseDispute: (markId, reason) => toData(api.patch(`/assessment-marks/${markId}/`, { dispute_reason: reason })),

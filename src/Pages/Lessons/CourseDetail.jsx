@@ -203,13 +203,15 @@ const CourseDetail = ({ user }) => {
     setUploading(true);
     setErrorMsg('');
     try {
-      const uploaded = await learningApi.uploadFile(uploadForm.file);
+      const uploaded = await learningApi.uploadFile(uploadForm.file, offeringId);
+      // LearningMaterial has `status` (ACTIVE/ARCHIVED), never `visibility`,
+      // and MaterialCreateSerializer rejects unknown keys. The extra key made
+      // every upload fail with "Unexpected fields: visibility."
       await learningApi.createMaterial({
         title: uploadForm.title.trim(),
         description: uploadForm.description,
         course_offering: offeringId,
         file: uploaded.id,
-        visibility: 'COURSE',
       });
       setUploadForm({ title: '', description: '', file: null });
       notify('Material uploaded.');
@@ -278,7 +280,7 @@ const CourseDetail = ({ user }) => {
     try {
       let attachmentId = null;
       if (asgnForm.file) {
-        const uploaded = await learningApi.uploadFile(asgnForm.file);
+        const uploaded = await learningApi.uploadFile(asgnForm.file, offeringId);
         attachmentId = uploaded.id;
       }
       await learningApi.createAssignment(offeringId, {
@@ -307,7 +309,7 @@ const CourseDetail = ({ user }) => {
     try {
       let fileId = null;
       if (submitForm.file) {
-        const uploaded = await learningApi.uploadFile(submitForm.file);
+        const uploaded = await learningApi.uploadFile(submitForm.file, offeringId);
         fileId = uploaded.id;
       }
       await learningApi.submitAssignment(assignment.id, {

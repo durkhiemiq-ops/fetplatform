@@ -124,11 +124,14 @@ const DepartmentPanel = () => {
     setBusy(true);
     setError('');
     try {
+      // Department carries no `description` column (model, read serializer and
+      // DepartmentCreateSerializer all omit it), and the create serializer
+      // rejects unknown keys outright. Sending it failed every creation with
+      // "This field is not permitted.", so the description is not on the wire.
       await academicsApi.createDepartment({
         code: form.code.trim().toUpperCase(),
         name: form.name.trim(),
         faculty: form.faculty,
-        description: form.description.trim(),
       });
       setForm({ code: '', name: '', faculty: '', description: '' });
       setShowForm(false);

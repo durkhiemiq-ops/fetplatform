@@ -158,7 +158,7 @@ const AssessmentPanel = ({ offeringId, user }) => {
     try {
       let attachmentId = null;
       if (form.file) {
-        const uploaded = await learningApi.uploadFile(form.file);
+        const uploaded = await learningApi.uploadFile(form.file, offeringId);
         attachmentId = uploaded.id;
       }
       await learningApi.createAssessment(offeringId, {
@@ -222,7 +222,7 @@ const AssessmentPanel = ({ offeringId, user }) => {
 
   const setStatus = async (assessment, status) => {
     try {
-      await learningApi.updateAssessment(assessment.id, { status });
+      await learningApi.publishSheet(assessment.id, status);
       flash(status === 'PUBLISHED'
         ? `${assessment.title} published. Students can now see their marks.`
         : 'Moved back to draft. Students can no longer see it.');
