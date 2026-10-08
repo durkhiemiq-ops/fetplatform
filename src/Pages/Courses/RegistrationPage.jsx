@@ -28,7 +28,7 @@ const RegistrationPage = () => {
       if (code === 'NO_ACTIVE_SEMESTER' || code === 'INCOMPLETE_PROFILE') {
         setBlocked({
           code,
-          message: err.response.data.error.message,
+          message: err?.response?.data?.error?.message || 'Your academic profile is incomplete.',
         });
       } else {
         setError(errorMessage(err, 'Could not load the course list.'));

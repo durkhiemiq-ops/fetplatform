@@ -66,7 +66,7 @@ const CoordinatorDashboard = ({ user }) => {
   ];
 
   const active = projects
-    .filter((p) => p.status === 'ACTIVE')
+    .filter((p) => p.status === 'active')
     .slice(0, 5);
   const pct = (p) => (p.task_count > 0
     ? Math.round((p.completed_task_count / p.task_count) * 100)

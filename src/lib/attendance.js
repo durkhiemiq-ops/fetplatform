@@ -6,12 +6,15 @@ const unwrap = (res) => {
   return body;
 };
 
+// Deliberately absent from this client: `myCourses`, `scan`, `manualAttendance`,
+// `deleteRecord` and `studentOfClass`. Each had no caller anywhere in the app —
+// QRScanner posts to /attendance/scan/ itself on the shared axios instance —
+// and neither permanent record deletion nor manual attendance is a supported
+// MVP surface, so a helper for them would only advertise a route the backend
+// does not offer.
 export const attendanceApi = {
   // Lecturer: the offerings they teach (used to launch sessions)
   lecturerCourses: () => api.get('/lecturers/me/courses/').then(unwrap),
-
-  // Student: courses they are enrolled in
-  myCourses: () => api.get('/students/me/courses/').then(unwrap),
 
   // Start a flexible attendance session (creates ClassSession + AttendanceSession)
   startFlex: (data) => api.post('/attendance/start-flex/', data).then(unwrap),
@@ -23,7 +26,8 @@ export const attendanceApi = {
   closeSession: (sessionId) => api.post(`/attendance/${sessionId}/close/`).then(unwrap),
 
   // Checkpoints (stations)
-  checkpoints: (sessionId) => api.get(`/attendance/${sessionId}/checkpoints/`).then(unwrap),
+  checkpoints: (sessionId) =>
+    api.get(`/attendance/${sessionId}/`).then(unwrap).then((data) => data?.checkpoints || []),
   createCheckpoints: (sessionId, studentIds) =>
     api.post(`/attendance/${sessionId}/checkpoints/`, { student_ids: studentIds }).then(unwrap),
   removeCheckpoint: (sessionId, checkpointId) =>
@@ -31,28 +35,43 @@ export const attendanceApi = {
   autoSelectStations: (sessionId, count = 3) =>
     api.post(`/attendance/${sessionId}/checkpoints/auto-select/`, { count }).then(unwrap),
 
-  // Tokens (projector rotation)
-  generateTokens: (sessionId) => api.post(`/attendance/${sessionId}/tokens/`).then(unwrap),
-
-  // Student scans a QR token
-  scan: (token) => api.post('/attendance/scan/', { token }).then(unwrap),
+  // Issue the code the room scans. The session's mode decides the contract:
+  // a PROJECTOR session mints the room's single 10-second code, while a
+  // STATIONS session hands out the next unmarked station's code. The client
+  // never supplies a student identity; scope and binding are server-derived.
+  generateTokens: async (sessionId) => {
+    const detail = await api.get(`/attendance/${sessionId}/`).then(unwrap);
+    if (detail?.mode === 'PROJECTOR') {
+      const token = await api.post(`/attendance/${sessionId}/token/`).then(unwrap);
+      return {
+        tokens: [{ token: token.token }],
+        expires_in_seconds: token.ttl_seconds || token.expires_in_seconds || 10,
+      };
+    }
+    const checkpoint = (detail?.checkpoints || []).find((row) => !row.marked);
+    if (!checkpoint) {
+      throw new Error('Select at least one unmarked student before projecting a QR code.');
+    }
+    const token = await api.post(`/attendance/checkpoints/${checkpoint.id}/token/`).then(unwrap);
+    return {
+      tokens: [{ ...token, student_name: checkpoint.student_name }],
+      expires_in_seconds: token.ttl_seconds,
+    };
+  },
 
   // Student acting as a station: poll fresh tokens for their QR display
   myStation: () => api.get('/students/me/station/').then(unwrap),
   myStationToken: (sessionId) => api.get(`/attendance/${sessionId}/my-station-token/`).then(unwrap),
 
-  // Student history + points
+  // Student history (points have no backend surface in the MVP)
   myAttendance: () => api.get('/students/me/attendance/').then(unwrap),
-  myPoints: () => api.get('/students/me/points/').then(unwrap),
 
   // Lecturer helpers
-  eligibleStudents: (classSessionId) => api.get(`/class-sessions/${classSessionId}/eligible-students/`).then(unwrap),
-  manualAttendance: (sessionId, data) => api.post(`/attendance/${sessionId}/manual/`, data).then(unwrap),
+  eligibleStudents: (sessionId) =>
+    api.get(`/attendance/${sessionId}/`).then(unwrap).then((data) => data?.eligible_students || []),
   correctRecord: (recordId, data) => api.patch(`/attendance/records/${recordId}/`, data).then(unwrap),
-  deleteRecord: (recordId) => api.delete(`/attendance/records/${recordId}/`).then(unwrap),
-  studentOfClass: (sessionId) => api.post(`/attendance/${sessionId}/student-of-class/`).then(unwrap),
-  sessionRecords: (classSessionId) =>
-    api.get(`/class-sessions/${classSessionId}/attendance/records/`).then(unwrap),
+  sessionRecords: (sessionId) =>
+    api.get(`/attendance/${sessionId}/`).then(unwrap).then((data) => data?.records || []),
 };
 
 export default attendanceApi;

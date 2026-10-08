@@ -14,7 +14,7 @@ export const projectsApi = {
   createGroup: (id, data) => api.post('/projects/' + id + '/groups/', data).then(unwrap),
   candidates: (id) => api.get('/projects/' + id + '/candidates/').then(unwrap),
   addMember: (id, groupId, data) => api.post('/projects/' + id + '/members/', {
-    student: data.student,
+    student: data.student ?? data.student_id,
     group: groupId || null,
   }).then(unwrap),
   removeMember: (id, groupId, studentId) => api.delete(

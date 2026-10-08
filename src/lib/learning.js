@@ -84,10 +84,18 @@ export const learningApi = {
   getSubmissions: (assignmentId) => toData(api.get(`/assignments/${assignmentId}/submissions/`)),
   submitAssignment: (assignmentId, data) => toData(api.post(`/assignments/${assignmentId}/submissions/`, data)),
   gradeSubmission: (submissionId, data) => toData(api.patch(`/submissions/${submissionId}/`, data)),
-  // Classrooms: a lecturer opens a classroom for one of their own courses and
-  // every registered student for that course is enrolled automatically.
+  // The offerings this caller may attach a class to. A *read* — it stays on
+  // /classrooms/ because that is the contract already in place for the picker,
+  // and preserving a read contract is not the same as reusing the write.
   availableClassroomCourses: () => toData(api.get('/classrooms/available-courses/')),
-  createClassroom: (data) => toData(api.post('/classrooms/', data)),
+  // Class definitions under one offering (API §22). "Create class" means an
+  // academic class definition belonging to an existing, authorized offering —
+  // never a new course, offering or roster — so nothing here posts to
+  // /classrooms/. The POST returns the persisted identity (201 + id); the GET
+  // is the readback the success panel uses to show what now exists.
+  listClasses: (offeringId) => toData(api.get(`/course-offerings/${offeringId}/classes/`)),
+  createClass: (offeringId, data) =>
+    toData(api.post(`/course-offerings/${offeringId}/classes/`, data)),
   // Assessment marks: lecturer creates a CA/exam sheet, types the marks,
   // publishes it; students review and can dispute. CSV export for the lecturer.
   getAssessments: (offeringId) => toData(api.get(`/course-offerings/${offeringId}/assessments/`)),
@@ -113,6 +121,10 @@ export const learningApi = {
   createGroup: (offeringId, data) => toData(api.post(`/course-offerings/${offeringId}/assessment-groups/`, data)),
   getGroup: (groupId) => toData(api.get(`/assessment-groups/${groupId}/`)),
   updateGroup: (groupId, data) => toData(api.patch(`/assessment-groups/${groupId}/`, data)),
+  // Bulk release of every sheet in one collection. The body is an empty
+  // object on purpose: publication state is derived server-side from the
+  // collection's membership, so there is no client-supplied status to send.
+  publishGroup: (groupId) => toData(api.post(`/assessment-groups/${groupId}/publish/`, {})),
   deleteGroup: (groupId) => api.delete(`/assessment-groups/${groupId}/`),
   groupExportUrl: (groupId) => `${api.defaults.baseURL}/assessment-groups/${groupId}/export.csv`,
   downloadGroupExport: (groupId) =>

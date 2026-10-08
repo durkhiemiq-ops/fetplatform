@@ -23,16 +23,19 @@ const AssessmentPanel = ({ offeringId, user }) => {
   const [newOpen, setNewOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({
-    title: '', description: '', category: 'CA', maximum_score: '100', raw_maximum: '',
-    weight: '', group: '', file: null,
+    title: '', category: 'CA', maximum_score: '100', weight: '',
   });
 
   const [groups, setGroups] = useState([]);
   const [groupOpen, setGroupOpen] = useState(false);
   const [creatingGroup, setCreatingGroup] = useState(false);
-  const [groupForm, setGroupForm] = useState({ title: '', maximum_score: '30' });
+  const [groupForm, setGroupForm] = useState({ title: '' });
   const [expandedGroup, setExpandedGroup] = useState(null);
-  const [groupRows, setGroupRows] = useState([]);
+  // Membership currently ticked in an open collection editor. Seeded from the
+  // collection's own `sheets` so what is saved is exactly what the server
+  // reported, never a locally invented set.
+  const [groupSheets, setGroupSheets] = useState([]);
+  const [savingMembership, setSavingMembership] = useState(false);
 
   const [openSheet, setOpenSheet] = useState(null);
   const [sheetMarks, setSheetMarks] = useState([]);
@@ -86,43 +89,77 @@ const AssessmentPanel = ({ offeringId, user }) => {
       return;
     }
     setExpandedGroup(group.id);
+    // Seed from the list copy first so the editor opens instantly, then confirm
+    // against the detail read rather than trusting a possibly stale listing.
+    setGroupSheets(group.sheets || []);
     try {
       const full = await learningApi.getGroup(group.id);
-      setGroupRows(full.students || []);
+      setGroupSheets(full.sheets || []);
     } catch (err) {
-      fail('Could not load the combined grade.');
+      // Non-fatal: the editor keeps the membership the listing reported.
+    }
+  };
+
+  const toggleSheetInGroup = (sheetId) => {
+    setGroupSheets((current) => (
+      current.includes(sheetId)
+        ? current.filter((id) => id !== sheetId)
+        : [...current, sheetId]
+    ));
+  };
+
+  const saveMembership = async (group) => {
+    setSavingMembership(true);
+    try {
+      await learningApi.updateGroup(group.id, { sheets: groupSheets });
+      flash('Sheets updated. Publication state was recalculated.');
+      await loadGroups();
+      await load();
+    } catch (err) {
+      fail(err.response?.data?.error?.message || 'Could not update the sheets.');
+    } finally {
+      setSavingMembership(false);
     }
   };
 
   const handleCreateGroup = async () => {
     if (!groupForm.title.trim()) {
-      fail('Give the grade a title.');
+      fail('Give the collection a title.');
       return;
     }
     setCreatingGroup(true);
     try {
+      // No maximum_score: a collection has no score of its own, only sheets.
       await learningApi.createGroup(offeringId, {
         title: groupForm.title.trim(),
-        maximum_score: groupForm.maximum_score || '30',
       });
-      setGroupForm({ title: '', maximum_score: '30' });
+      setGroupForm({ title: '' });
       setGroupOpen(false);
-      flash('Grade created. Assign your CAs to it below.');
+      flash('Collection created. Add the sheets it should publish below.');
       loadGroups();
     } catch (err) {
-      fail(err.response?.data?.error?.message || 'Could not create the grade.');
+      fail(err.response?.data?.error?.message || 'Could not create the collection.');
     } finally {
       setCreatingGroup(false);
     }
   };
 
-  const setGroupStatus = async (group, status) => {
+  const publishGroupSheets = async (group) => {
+    // Guarded in the UI *and* on the server: an empty collection answers
+    // EMPTY_GROUP, and an already-complete one is a no-op rather than a claim
+    // that new work happened.
+    if (group.sheet_count === 0 || group.publication_state === 'PUBLISHED') return;
     try {
-      await learningApi.updateGroup(group.id, { status });
-      flash(status === 'PUBLISHED' ? `${group.title} published.` : 'Moved back to draft.');
-      loadGroups();
+      const res = await learningApi.publishGroup(group.id);
+      if (res.newly_published) {
+        flash(`${group.title}: published ${res.newly_published} of ${res.sheet_count} sheet${res.sheet_count === 1 ? '' : 's'}.`);
+      } else {
+        flash(`${group.title}: every sheet was already published.`);
+      }
+      await loadGroups();
+      await load();
     } catch (err) {
-      fail(err.response?.data?.error?.message || 'Could not update.');
+      fail(err.response?.data?.error?.message || 'Could not publish the sheets.');
     }
   };
 
@@ -156,22 +193,17 @@ const AssessmentPanel = ({ offeringId, user }) => {
     }
     setCreating(true);
     try {
-      let attachmentId = null;
-      if (form.file) {
-        const uploaded = await learningApi.uploadFile(form.file, offeringId);
-        attachmentId = uploaded.id;
-      }
+      // Only fields the sheet endpoint accepts. `description`, `raw_maximum`
+      // and `attachment` have no column on `AssessmentSheet`, so posting them
+      // used to look successful and store nothing (and the attachment upload
+      // left an orphan file behind).
       await learningApi.createAssessment(offeringId, {
         title: form.title.trim(),
-        description: form.description,
         category: form.category,
         maximum_score: form.maximum_score || '100',
-        raw_maximum: form.raw_maximum === '' ? null : form.raw_maximum,
         weight: form.weight || '0',
-        ...(form.group ? { group: form.group } : {}),
-        ...(attachmentId ? { attachment: attachmentId } : {}),
       });
-      setForm({ title: '', description: '', category: 'CA', maximum_score: '100', raw_maximum: '', weight: '', group: '', file: null });
+      setForm({ title: '', category: 'CA', maximum_score: '100', weight: '' });
       setNewOpen(false);
       flash('Assessment created as a draft. Enter marks, then publish.');
       load();
@@ -227,6 +259,9 @@ const AssessmentPanel = ({ offeringId, user }) => {
         ? `${assessment.title} published. Students can now see their marks.`
         : 'Moved back to draft. Students can no longer see it.');
       load();
+      // A sheet's release changes every collection it belongs to, so the
+      // derived state on those cards has to be recomputed too.
+      loadGroups();
     } catch (err) {
       fail(err.response?.data?.error?.message || 'Could not update.');
     }
@@ -324,7 +359,7 @@ const AssessmentPanel = ({ offeringId, user }) => {
           </div>
 
           {groupOpen && (
-            <div className="mt-4 grid grid-cols-1 sm:grid-cols-[1fr_140px_auto] gap-3 items-end">
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end">
               <label className="flex flex-col gap-1">
                 <span className="fet-label">Title</span>
                 <input
@@ -333,15 +368,6 @@ const AssessmentPanel = ({ offeringId, user }) => {
                   onChange={(e) => setGroupForm({ ...groupForm, title: e.target.value })}
                   className="fet-input"
                   placeholder="e.g. Continuous Assessment"
-                />
-              </label>
-              <label className="flex flex-col gap-1">
-                <span className="fet-label">Out of</span>
-                <input
-                  type="number" min="0"
-                  value={groupForm.maximum_score}
-                  onChange={(e) => setGroupForm({ ...groupForm, maximum_score: e.target.value })}
-                  className="fet-input"
                 />
               </label>
               <button
@@ -357,8 +383,26 @@ const AssessmentPanel = ({ offeringId, user }) => {
           {groups.length > 0 && (
             <div className="mt-4 space-y-2">
               {groups.map((g) => {
-                const published = g.status === 'PUBLISHED';
+                const state = g.publication_state || 'DRAFT';
+                const sheetCount = g.sheet_count ?? 0;
+                const publishedCount = g.published_sheet_count ?? 0;
                 const open = expandedGroup === g.id;
+                // Every label here describes *sheets*, never "members": this
+                // is a collection of assessment sheets and nothing else.
+                const publishLabel = state === 'PUBLISHED'
+                  ? 'Published'
+                  : publishedCount > 0
+                    ? 'Publish remaining sheets'
+                    : 'Publish all sheets';
+                const badgeClass = state === 'PUBLISHED'
+                  ? 'bg-green-50 text-green-700 border-green-200'
+                  : state === 'PARTIALLY_PUBLISHED'
+                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                    : 'bg-amber-50 text-amber-700 border-amber-200';
+                const badgeLabel = state === 'PARTIALLY_PUBLISHED'
+                  ? 'Partially published'
+                  : state === 'PUBLISHED' ? 'Published' : 'Draft';
+                const publishDisabled = sheetCount === 0 || state === 'PUBLISHED';
                 return (
                   <div key={g.id} className="p-3 rounded-xl bg-page-bg border border-border-default">
                     <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -367,17 +411,13 @@ const AssessmentPanel = ({ offeringId, user }) => {
                         <span className="min-w-0">
                           <span className="block font-semibold text-text-primary text-sm">{g.title}</span>
                           <span className="block text-xs text-text-secondary">
-                            Out of {g.maximum_score} · {g.member_count} assessment{g.member_count === 1 ? '' : 's'} ·{' '}
-                            {g.published_members} published
-                            {g.average != null ? ` · class average ${g.average}` : ''}
+                            {sheetCount} sheet{sheetCount === 1 ? '' : 's'} · {publishedCount} published
                           </span>
                         </span>
                       </button>
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${published
-                          ? 'bg-green-50 text-green-700 border-green-200'
-                          : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
-                          {published ? 'Published' : 'Draft'}
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${badgeClass}`}>
+                          {badgeLabel}
                         </span>
                         <button
                           type="button"
@@ -389,10 +429,13 @@ const AssessmentPanel = ({ offeringId, user }) => {
                           <Download size={13} /> CSV
                         </button>
                         <button
-                          onClick={() => setGroupStatus(g, published ? 'DRAFT' : 'PUBLISHED')}
+                          type="button"
+                          onClick={() => publishGroupSheets(g)}
+                          disabled={publishDisabled}
+                          title={sheetCount === 0 ? 'This collection has no sheets to publish.' : undefined}
                           className="fet-btn-secondary text-xs"
                         >
-                          {published ? 'Unpublish' : 'Publish'}
+                          {publishLabel}
                         </button>
                         <button onClick={() => handleDeleteGroup(g)} className="p-1 hover:bg-red-50 rounded">
                           <Trash2 size={14} className="text-red-500" />
@@ -400,72 +443,65 @@ const AssessmentPanel = ({ offeringId, user }) => {
                       </div>
                     </div>
 
-                    {g.members.length > 0 && (
-                      <p className="mt-2 text-xs text-text-secondary flex flex-wrap gap-x-3 gap-y-1">
-                        {g.members.map((m) => (
-                          <span key={m.id}>
-                            {m.title}
-                            {m.is_converted ? ` (/${m.marking_scale_value})` : ''}
-                          </span>
-                        ))}
-                      </p>
-                    )}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {sheetCount === 0 ? (
+                        <span className="text-[11px] text-text-secondary">No sheets in this collection yet.</span>
+                      ) : (g.sheets_detail || []).map((s) => (
+                        <span
+                          key={s.id}
+                          className="text-[11px] px-2 py-0.5 rounded-full bg-white border border-border-default text-text-secondary"
+                        >
+                          {s.title} · {s.status === 'PUBLISHED' ? 'published' : 'draft'}
+                        </span>
+                      ))}
+                    </div>
 
                     {open && (
-                      <div className="mt-3 overflow-x-auto">
-                        <table className="fet-table">
-                          <thead>
-                            <tr>
-                              <th>Student</th>
-                              <th>Number</th>
-                              {g.members.map((m) => (
-                                <th key={m.id} className="text-xs">
-                                  {m.title}
-                                  <span className="block font-normal text-text-secondary">
-                                    {m.group_weight ? `${m.group_weight}%` : 'even split'}
+                      <div className="mt-3 rounded-xl bg-white border border-border-default p-3 space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="fet-label">Sheets in this collection</span>
+                          <span className="text-[11px] text-text-secondary">{groupSheets.length} ticked</span>
+                        </div>
+                        {assessments.length === 0 ? (
+                          <p className="text-xs text-text-secondary">
+                            Create an assessment sheet first, then tick it in here.
+                          </p>
+                        ) : (
+                          <ul className="space-y-1 max-h-56 overflow-y-auto pr-1">
+                            {assessments.map((a) => (
+                              <li key={a.id}>
+                                <label className="flex items-start gap-2 text-sm text-text-primary cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    className="mt-1"
+                                    checked={groupSheets.includes(a.id)}
+                                    onChange={() => toggleSheetInGroup(a.id)}
+                                  />
+                                  <span>
+                                    {a.title}
+                                    <span className="text-text-secondary text-xs">
+                                      {' '}· {a.status === 'PUBLISHED' ? 'published' : 'draft'}
+                                    </span>
                                   </span>
-                                </th>
-                              ))}
-                              <th>Total</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {groupRows.length === 0 && (
-                              <tr>
-                                <td colSpan={3 + g.members.length} className="text-center py-4 text-text-secondary text-sm">
-                                  No marks recorded yet for this grade.
-                                </td>
-                              </tr>
-                            )}
-                            {groupRows.map((row) => {
-                              const byId = Object.fromEntries(row.breakdown.map((b) => [b.assessment_id, b]));
-                              return (
-                                <tr key={row.student}>
-                                  <td className="font-medium">{row.student_name}</td>
-                                  <td className="text-text-secondary text-xs">{row.student_number}</td>
-                                  {g.members.map((m) => {
-                                    const b = byId[m.id];
-                                    return (
-                                      <td key={m.id} className="text-sm">
-                                        {b?.points != null ? (
-                                          <span title={`${b.raw_score} / ${b.marking_scale}`}>
-                                            {b.points}
-                                            <span className="text-text-secondary text-xs"> / {b.contributes_out_of}</span>
-                                          </span>
-                                        ) : (
-                                          <span className="text-text-secondary">—</span>
-                                        )}
-                                      </td>
-                                    );
-                                  })}
-                                  <td className="font-bold text-primary">
-                                    {row.total != null ? `${row.total} / ${row.out_of}` : '—'}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                                </label>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        <div className="flex justify-end gap-2">
+                          <button type="button" onClick={() => toggleGroup(g)} className="fet-btn-secondary text-xs">
+                            Close
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => saveMembership(g)}
+                            disabled={savingMembership}
+                            className="fet-btn-primary text-xs flex items-center gap-1"
+                          >
+                            {savingMembership ? <Loader2 size={13} className="animate-spin" /> : null}
+                            Save sheets
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -519,21 +555,6 @@ const AssessmentPanel = ({ offeringId, user }) => {
               <span className="text-[11px] text-text-secondary">What students see (CA = 30, Exam = 100)</span>
             </label>
             <label className="flex flex-col gap-1">
-              <span className="fet-label">You mark out of (optional)</span>
-              <input
-                type="number" min="0"
-                value={form.raw_maximum}
-                onChange={(e) => setForm({ ...form, raw_maximum: e.target.value })}
-                className="fet-input"
-                placeholder={form.maximum_score || 'same'}
-              />
-              <span className="text-[11px] text-text-secondary">
-                {form.raw_maximum && form.raw_maximum !== form.maximum_score
-                  ? `You type marks out of ${form.raw_maximum}; students see them converted to ${form.maximum_score}.`
-                  : 'Leave blank to type marks directly on the reported scale.'}
-              </span>
-            </label>
-            <label className="flex flex-col gap-1">
               <span className="fet-label">Weight (%, optional)</span>
               <input
                 type="number" min="0"
@@ -543,43 +564,13 @@ const AssessmentPanel = ({ offeringId, user }) => {
                 placeholder="e.g. 10"
               />
             </label>
-            {groups.length > 0 && (
-              <label className="flex flex-col gap-1 sm:col-span-2">
-                <span className="fet-label">Combine into a grade</span>
-                <select
-                  value={form.group}
-                  onChange={(e) => setForm({ ...form, group: e.target.value })}
-                  className="fet-input"
-                >
-                  <option value="">Not part of a combined grade</option>
-                  {groups.map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.title} (out of {g.maximum_score})
-                    </option>
-                  ))}
-                </select>
-                <span className="text-[11px] text-text-secondary">
-                  Several CAs can roll up into one CA out of {groups.find((g) => g.id === form.group)?.maximum_score || 30}.
-                </span>
-              </label>
-            )}
+            {/* Membership is edited on the collection card, not here: the
+                sheet-create payload has no `group` field on the server, so a
+                select here would be silently dropped. The same rule removes
+                `raw_maximum`, `description` and the attachment picker — the
+                sheet model has no such columns, and a control that posts a
+                value nobody stores is worse than no control. */}
           </div>
-          <label className="flex flex-col gap-1">
-            <span className="fet-label">Notes for students (optional)</span>
-            <textarea
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              className="fet-input min-h-[60px]"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="fet-label">Attach mark sheet (PDF, CSV or any file)</span>
-            <input
-              type="file"
-              onChange={(e) => setForm({ ...form, file: e.target.files[0] })}
-              className="fet-input"
-            />
-          </label>
           <div className="flex justify-end">
             <button
               onClick={handleCreate}

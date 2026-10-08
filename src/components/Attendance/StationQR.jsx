@@ -3,7 +3,9 @@ import { RefreshCw, Clock, Users, Loader2 } from 'lucide-react';
 import attendanceApi from '../../lib/attendance';
 import QRCodeDisplay from './QRCode';
 
-const REFRESH_MS = 9000;
+// Re-roll well inside the 10s token TTL so a slow poll can never leave a
+// dead code on screen (BR-035: codes are continuously replaced, not 60s).
+const REFRESH_MS = 8000;
 
 const StationQR = ({ sessionId, station }) => {
   const [timeLeft, setTimeLeft] = useState(0);

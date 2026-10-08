@@ -11,8 +11,6 @@ export const profileApi = {
   me: () => authApi.me().then(unwrap),
   updateMe: (data) => api.patch('/auth/me/', data).then(unwrap),
   departments: () => api.get('/academic/departments/').then(unwrap),
-  activity: (studentId) =>
-    api.get(studentId ? `/students/${studentId}/activity/` : '/students/me/activity/').then(unwrap),
 };
 
 export default profileApi;

@@ -59,6 +59,16 @@ const ensureCsrfToken = () => {
 
 api.interceptors.request.use(async (config) => {
   const method = (config.method || 'get').toLowerCase();
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    // File uploads (roster CSV) must go out as multipart/form-data with a
+    // browser-generated boundary. The instance default is application/json,
+    // which would otherwise be sent verbatim: Django then sees no multipart
+    // body, request.FILES is empty, and the upload fails with
+    // "A CSV file is required." even though a file was chosen. Deleting the
+    // header lets the browser set the correct one automatically.
+    config.headers = config.headers || {};
+    delete config.headers['Content-Type'];
+  }
   if (UNSAFE_METHODS.has(method)) {
     const token = await ensureCsrfToken();
     if (token) {

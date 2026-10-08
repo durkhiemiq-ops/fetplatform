@@ -34,11 +34,15 @@ const AcademicCalendar = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  const active = semesters.find((s) => s.is_active) || null;
+  // Backend truth is `is_current` (single-current semester) plus `status`;
+  // there is no `is_active` field on the wire. Reading `is_active` used to
+  // make this page report "None active" forever while the table still showed
+  // ACTIVE statuses.
+  const active = semesters.find((s) => s.is_current) || null;
 
   const tiles = [
     { label: 'Semester', value: active ? active.name : 'None active' },
-    { label: 'Academic year', value: active ? active.academic_year : '—' },
+    { label: 'Academic year', value: active ? active.school_year_name : '—' },
     { label: 'Starts', value: active ? formatDate(active.start_date) : '—' },
     { label: 'Ends', value: active ? formatDate(active.end_date) : '—' },
     {
@@ -56,7 +60,7 @@ const AcademicCalendar = () => {
             {active ? (
               <>
                 <p className="text-[#8683BA] mt-1">
-                  {active.name} • {active.academic_year}
+                  {active.name} • {active.school_year_name}
                 </p>
                 <p className="text-[#8683BA] text-sm mt-1">
                   {formatDate(active.start_date)} – {formatDate(active.end_date)}
@@ -132,8 +136,8 @@ const AcademicCalendar = () => {
                     <td>{formatDate(s.end_date)}</td>
                     <td>{s.registration_deadline ? formatDate(s.registration_deadline) : '—'}</td>
                     <td>
-                      {s.is_active
-                        ? <span className="fet-badge fet-badge-active">Active</span>
+                      {s.is_current
+                        ? <span className="fet-badge fet-badge-active">Current</span>
                         : <span className="fet-badge fet-badge-inactive">{s.status}</span>}
                     </td>
                   </tr>

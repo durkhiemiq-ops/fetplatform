@@ -23,11 +23,15 @@ const EMPTY = {
 };
 
 const statusBadge = (status) => {
+  // Keys are lower-case: both project and task statuses are stored that way
+  // (Project.Status.ACTIVE == "active", ProjectTask.Status.TODO == "todo").
+  // Upper-case keys never matched, so every badge rendered with the generic
+  // fallback style regardless of the actual status.
   const cls = {
-    COMPLETED: 'fet-badge fet-badge-completed',
-    IN_PROGRESS: 'fet-badge fet-badge-warning',
-    ACTIVE: 'fet-badge fet-badge-active',
-    DRAFT: 'fet-badge fet-badge-pending',
+    completed: 'fet-badge fet-badge-completed',
+    in_progress: 'fet-badge fet-badge-warning',
+    active: 'fet-badge fet-badge-active',
+    draft: 'fet-badge fet-badge-pending',
   }[status] || 'fet-badge fet-badge-inactive';
   return <span className={cls}>{String(status || '').replace(/_/g, ' ')}</span>;
 };
@@ -237,7 +241,7 @@ const StudentDashboard = ({ user }) => {
                         className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                         style={{ backgroundColor: 'rgba(63,53,181,0.08)' }}
                       >
-                        {t.status === 'IN_PROGRESS'
+                        {t.status === 'in_progress'
                           ? <Clock size={14} className="text-warning" />
                           : <ListTodo size={14} className="text-text-secondary" />}
                       </div>

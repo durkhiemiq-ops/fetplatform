@@ -1,10 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Mail, Lock, Eye, EyeOff, User, UserPlus, ArrowLeft,
-  Building, GraduationCap, BookOpen, Briefcase,
+  GraduationCap, BookOpen, Briefcase,
 } from 'lucide-react';
 import { publicApi } from '../../lib/auth';
-import { academicsApi } from '../../lib/academics';
+import { VerifyEmail } from './AccountRecovery';
 
 /**
  * Public self-registration.
@@ -26,11 +26,16 @@ import { academicsApi } from '../../lib/academics';
  * The toggle still exists, but it now sends `account_type` — a *request*.
  * The backend resolves the real role and, for lecturers, holds the account at
  * PENDING until an administrator approves it. No field here can grant a role.
+ *
+ * The lecturer form also collects no staff number / staff code. Nothing
+ * authoritative exists to validate one against, so asking for it would invent
+ * an institutional rule; email verification plus administrator approval is
+ * the complete lecturer onboarding gate.
  */
-const SignUp = ({ onRegistered, onSwitchToLogin }) => {
+const SignUp = ({ onSwitchToLogin }) => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [departments, setDepartments] = useState([]);
+  const [pendingReview, setPendingReview] = useState(false);
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -38,29 +43,11 @@ const SignUp = ({ onRegistered, onSwitchToLogin }) => {
     password: '',
     confirmPassword: '',
     accountType: 'student',
-    department: '',
-    level: '',
     matricule: '',
-    staffid: '',
   });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-
-  // Departments come from the real catalogue. The original screen hardcoded
-  // five invented ones with invented coordinator names.
-  useEffect(() => {
-    let cancelled = false;
-    academicsApi
-      .publicDepartments()
-      .then((rows) => {
-        if (!cancelled) setDepartments(Array.isArray(rows) ? rows : []);
-      })
-      .catch(() => {
-        if (!cancelled) setDepartments([]);
-      });
-    return () => { cancelled = true; };
-  }, []);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -83,20 +70,8 @@ const SignUp = ({ onRegistered, onSwitchToLogin }) => {
       setError('Please enter your email address.');
       return;
     }
-    if (isStudent && !formData.department) {
-      setError('Please select your department.');
-      return;
-    }
     if (isStudent && !formData.matricule.trim()) {
       setError('Matricule number is required for students.');
-      return;
-    }
-    if (isStudent && !formData.level) {
-      setError('Please select your level.');
-      return;
-    }
-    if (!isStudent && !formData.staffid.trim()) {
-      setError('Staff number is required for lecturers.');
       return;
     }
     if (!formData.password || formData.password.length < 8) {
@@ -118,28 +93,21 @@ const SignUp = ({ onRegistered, onSwitchToLogin }) => {
         password: formData.password,
       };
       if (isStudent) {
-        const dept = departments.find((d) => d.id === formData.department);
-        payload.department = formData.department;
-        payload.level = formData.level;
         payload.matricule = formData.matricule.trim().toUpperCase();
-        if (dept?.code) payload.department_code = dept.code;
-      } else {
-        payload.staffid = formData.staffid.trim().toUpperCase();
       }
+      // Lecturers send no staff number: there is no staff code to collect and
+      // no registry to check it against. Email verification plus administrator
+      // approval is the whole gate (MVP mandate s8).
 
       const result = await publicApi.register(payload);
       const pendingLecturer = Boolean(result?.lecturer_approval_required);
+      setPendingReview(pendingLecturer);
       setSuccess(
         pendingLecturer
           ? 'Account created. Verify your email address, then an administrator will review your lecturer application.'
           : 'Account created. Verify your email address, then sign in.',
       );
       setFormData((prev) => ({ ...prev, password: '', confirmPassword: '' }));
-      if (!pendingLecturer && onRegistered) {
-        // Stay on the confirmation screen rather than pretending to be signed
-        // in: email verification is required before a session exists.
-        onRegistered(null);
-      }
     } catch (err) {
       setError(readableError(err));
     } finally {
@@ -149,6 +117,8 @@ const SignUp = ({ onRegistered, onSwitchToLogin }) => {
 
   const inputBase = 'fet-input';
   const labelBase = 'fet-label';
+
+  if (success) return <VerifyEmail initialEmail={formData.email.trim()} pendingLecturer={pendingReview} onBack={onSwitchToLogin} />;
 
   return (
     <div className="min-h-screen flex">
@@ -219,57 +189,14 @@ const SignUp = ({ onRegistered, onSwitchToLogin }) => {
             </div>
 
             {isStudent && (
-              <>
-                <div>
-                  <label className={labelBase}>Department *</label>
-                  <div className="relative">
-                    <Building className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
-                    <select name="department" value={formData.department} onChange={handleChange}
-                      className={`${inputBase} pl-10`} required>
-                      <option value="">-- Select Department --</option>
-                      {departments.map((dept) => (
-                        <option key={dept.id} value={dept.id}>
-                          {dept.name}{dept.code ? ` (${dept.code})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className={labelBase}>Matricule Number *</label>
-                  <div className="relative">
-                    <BookOpen className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
-                    <input type="text" name="matricule" value={formData.matricule} onChange={handleChange}
-                      placeholder="e.g., FE24A389" className={`${inputBase} pl-10 uppercase`} required />
-                  </div>
-                  <p className="text-[11px] text-text-secondary mt-1">Your unique student identification number</p>
-                </div>
-
-                <div>
-                  <label className={labelBase}>Level *</label>
-                  <div className="relative">
-                    <GraduationCap className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
-                    <select name="level" value={formData.level} onChange={handleChange}
-                      className={`${inputBase} pl-10`} required>
-                      <option value="">Select Level</option>
-                      {['100', '200', '300', '400', '500', 'MSc', 'PhD'].map((lv) => (
-                        <option key={lv} value={lv}>{lv === 'MSc' || lv === 'PhD' ? lv : `${lv} Level`}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {!isStudent && (
               <div>
-                <label className={labelBase}>Staff Number *</label>
+                <label className={labelBase}>Matricule Number *</label>
                 <div className="relative">
-                  <Briefcase className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
-                  <input type="text" name="staffid" value={formData.staffid} onChange={handleChange}
-                    placeholder="e.g., STF-001" className={`${inputBase} pl-10 uppercase`} required />
+                  <BookOpen className="absolute left-3 top-1/2 transform -translate-y-1/2 text-text-secondary" size={16} />
+                  <input type="text" name="matricule" value={formData.matricule} onChange={handleChange}
+                    placeholder="e.g., FE24A389" className={`${inputBase} pl-10 uppercase`} required />
                 </div>
+                <p className="text-[11px] text-text-secondary mt-1">Your unique student identification number</p>
               </div>
             )}
 

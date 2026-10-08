@@ -1,17 +1,21 @@
 import React from 'react';
 
+// Keys are lower-case because that is what the API stores: the project model
+// declares `ACTIVE = "active"`, `COMPLETED = "completed"`, and so on. Keying
+// these maps upper-case made every lookup miss, so badges fell back to the
+// generic style and the status filter matched nothing.
 export const STATUS_LABELS = {
-  DRAFT: 'Draft',
-  ACTIVE: 'Active',
-  COMPLETED: 'Completed',
-  ARCHIVED: 'Archived',
+  draft: 'Draft',
+  active: 'Active',
+  completed: 'Completed',
+  archived: 'Archived',
 };
 
 const STATUS_BADGES = {
-  DRAFT: 'fet-badge fet-badge-pending',
-  ACTIVE: 'fet-badge fet-badge-active',
-  COMPLETED: 'fet-badge fet-badge-completed',
-  ARCHIVED: 'fet-badge fet-badge-inactive',
+  draft: 'fet-badge fet-badge-pending',
+  active: 'fet-badge fet-badge-active',
+  completed: 'fet-badge fet-badge-completed',
+  archived: 'fet-badge fet-badge-inactive',
 };
 
 export const statusBadge = (status) => (

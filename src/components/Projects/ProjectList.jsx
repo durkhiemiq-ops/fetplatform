@@ -120,9 +120,9 @@ const ProjectsList = () => {
 
   const counts = {
     total: projects.length,
-    active: projects.filter((p) => p.status === 'ACTIVE').length,
-    completed: projects.filter((p) => p.status === 'COMPLETED').length,
-    draft: projects.filter((p) => p.status === 'DRAFT').length,
+    active: projects.filter((p) => p.status === 'active').length,
+    completed: projects.filter((p) => p.status === 'completed').length,
+    draft: projects.filter((p) => p.status === 'draft').length,
   };
 
   return (

@@ -20,17 +20,29 @@ const MyCourses = ({ user }) => {
 
   const [showCreate, setShowCreate] = useState(false);
   const [available, setAvailable] = useState(null);
-  const [selectedCourse, setSelectedCourse] = useState('');
+  const [selectedOffering, setSelectedOffering] = useState('');
+  const [className, setClassName] = useState('');
+  const [classType, setClassType] = useState('LECTURE');
+  const [location, setLocation] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
   const [created, setCreated] = useState(null);
+  const [readback, setReadback] = useState(null);
+
+  const resetCreate = () => {
+    setCreateError('');
+    setCreated(null);
+    setReadback(null);
+    setSelectedOffering('');
+    setClassName('');
+    setClassType('LECTURE');
+    setLocation('');
+    setAvailable(null);
+  };
 
   const openCreate = async () => {
     setShowCreate(true);
-    setCreateError('');
-    setCreated(null);
-    setSelectedCourse('');
-    setAvailable(null);
+    resetCreate();
     try {
       const data = await learningApi.availableClassroomCourses();
       setAvailable(data);
@@ -39,26 +51,34 @@ const MyCourses = ({ user }) => {
     }
   };
 
+  const selected = available?.courses?.find((c) => c.offering_id === selectedOffering);
+
   const handleCreate = async () => {
-    if (!selectedCourse) return;
+    // Pending-state guard: the submit button is disabled too, but a second
+    // click must not slip through a re-render while the first is in flight.
+    if (creating || !selectedOffering || !className.trim()) return;
     setCreating(true);
     setCreateError('');
     try {
-      const result = await learningApi.createClassroom({ course_id: selectedCourse });
+      const payload = { name: className.trim(), class_type: classType };
+      const where = location.trim();
+      if (where) payload.location = where;
+      const result = await learningApi.createClass(selectedOffering, payload);
       setCreated(result);
-      const load = async () => {
-        const data = await learningApi.getMyCourses(user?.role || 'student');
-        setCourses(data || []);
-      };
-      await load();
+      // Read the row straight back rather than trusting the echo of what was
+      // just posted — this is the server's persisted identity for the class.
+      try {
+        const rows = await learningApi.listClasses(selectedOffering);
+        setReadback((rows || []).find((row) => row.id === result?.id) || null);
+      } catch (err) {
+        setReadback(null);
+      }
     } catch (err) {
-      setCreateError(err.response?.data?.error?.message || 'Could not create the classroom.');
+      setCreateError(err.response?.data?.error?.message || 'Could not create the class.');
     } finally {
       setCreating(false);
     }
   };
-
-  const selected = available?.courses?.find((c) => c.course_id === selectedCourse);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +99,11 @@ const MyCourses = ({ user }) => {
   }, [user]);
 
   const openCourse = (course) => {
+    // A row without an offering id cannot address a detail page: navigating
+    // would land on /lessons/undefined. The backend sends offering_id on
+    // every row (see tests_offering_id_contract), so a missing one is corrupt
+    // data, not a state to navigate from.
+    if (!course?.offering_id) return;
     navigate(`/lessons/${course.offering_id}`);
   };
 
@@ -103,7 +128,7 @@ const MyCourses = ({ user }) => {
         crumb={[{ label: 'FET Platform' }, { label: 'Classrooms' }]}
         actions={isStaff ? (
           <button type="button" onClick={openCreate} className="fet-btn-primary">
-            <Plus size={15} /> New classroom
+            <Plus size={15} /> Create class
           </button>
         ) : null}
       />
@@ -142,7 +167,7 @@ const MyCourses = ({ user }) => {
               : 'Your enrolled courses for the active semester appear here.'}
             action={isStaff ? (
               <button type="button" onClick={openCreate} className="fet-btn-primary">
-                <Plus size={15} /> New classroom
+                <Plus size={15} /> Create class
               </button>
             ) : null}
           />
@@ -235,9 +260,9 @@ const MyCourses = ({ user }) => {
           <div className="fet-card bg-white rounded-2xl shadow-modal w-full max-w-lg">
             <div className="flex items-center justify-between p-5 border-b border-border-default">
               <div>
-                <h3 className="text-lg font-bold text-text-primary">Create a classroom</h3>
+                <h3 className="text-lg font-bold text-text-primary">Create class</h3>
                 <p className="text-xs text-text-secondary mt-0.5">
-                  Pick one of your courses. Everyone registered for it joins automatically.
+                  Add a class to a course offering you already teach.
                 </p>
               </div>
               <button onClick={() => setShowCreate(false)} className="p-1 hover:bg-page-bg rounded-lg">
@@ -258,27 +283,30 @@ const MyCourses = ({ user }) => {
                   <div className="bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded-lg text-sm flex items-start gap-2">
                     <CheckCircle2 size={18} className="mt-0.5 shrink-0" />
                     <div>
-                      <p className="font-semibold">{created.course_code} classroom is ready</p>
+                      <p className="font-semibold">{created.name} is ready</p>
                       <p className="mt-0.5">
-                        {created.auto_enrolled} student{created.auto_enrolled === 1 ? '' : 's'} enrolled
-                        automatically for {created.semester}.
+                        {created.course_code} — {created.course_title}
+                        {created.day_of_week ? ` · ${created.day_of_week}` : ''}
+                      </p>
+                      <p className="mt-1 num text-[11.5px]">
+                        {readback ? `Saved as ${readback.id}` : `Created as ${created.id}`}
                       </p>
                     </div>
                   </div>
                   <div className="flex justify-end gap-2">
                     <button onClick={() => setShowCreate(false)} className="fet-btn-secondary">Close</button>
                     <button
-                      onClick={() => { setShowCreate(false); navigate(`/lessons/${created.offering_id}`); }}
+                      onClick={() => { setShowCreate(false); navigate(`/lessons/${selectedOffering}`); }}
                       className="fet-btn-primary flex items-center gap-2"
                     >
-                      Open classroom <ArrowRight size={15} />
+                      Open course <ArrowRight size={15} />
                     </button>
                   </div>
                 </div>
               ) : (
                 <>
                   <div>
-                    <label className="fet-label">Course</label>
+                    <label className="fet-label">Course offering</label>
                     {!available ? (
                       <div className="flex items-center gap-2 text-text-secondary text-sm py-3">
                         <Loader2 size={16} className="animate-spin" /> Loading your courses...
@@ -288,69 +316,101 @@ const MyCourses = ({ user }) => {
                         You have no courses assigned yet. Ask your department admin to assign you a course.
                       </p>
                     ) : (
-                      <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                        {available.courses.map((c) => {
-                          const taken = !!c.existing_classroom;
-                          return (
-                            <button
-                              key={c.course_id}
-                              disabled={taken}
-                              onClick={() => setSelectedCourse(c.course_id)}
-                              className={`w-full text-left p-3 rounded-xl border transition-colors ${
-                                taken
-                                  ? 'opacity-50 cursor-not-allowed border-border-default'
-                                  : selectedCourse === c.course_id
-                                    ? 'border-primary bg-primary/5'
-                                    : 'border-border-default hover:border-primary'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-semibold text-text-primary text-sm">
-                                  {c.course_code} — {c.course_title}
-                                </span>
-                                {taken ? (
-                                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-page-bg text-text-secondary shrink-0">
-                                    Already open
-                                  </span>
-                                ) : (
-                                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary/10 text-primary shrink-0">
-                                    {c.cohort_size} student{c.cohort_size === 1 ? '' : 's'}
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs text-text-secondary mt-0.5">
-                                Level {c.level || '—'} · {c.credit_units} units
-                                {taken && c.existing_classroom?.lecturer_name
-                                  ? ` · taught by ${c.existing_classroom.lecturer_name}`
-                                  : ''}
-                              </p>
-                            </button>
-                          );
-                        })}
+                      <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                        {available.courses.map((c) => (
+                          <button
+                            key={c.offering_id}
+                            type="button"
+                            onClick={() => setSelectedOffering(c.offering_id)}
+                            className={`w-full text-left p-3 rounded-xl border transition-colors ${
+                              selectedOffering === c.offering_id
+                                ? 'border-primary bg-primary/5'
+                                : 'border-border-default hover:border-primary'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-text-primary text-sm">
+                                {c.course_code} — {c.course_title}
+                              </span>
+                              <span className="text-[11px] px-2 py-0.5 rounded-full bg-page-bg text-text-secondary shrink-0">
+                                {c.semester || 'Active semester'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-text-secondary mt-0.5">
+                              {c.department ? `${c.department} · ` : ''}
+                              {c.lecturer_name || 'Unassigned'}
+                            </p>
+                          </button>
+                        ))}
                       </div>
                     )}
                   </div>
 
-                  {selected && (
+                  <div>
+                    <label className="fet-label" htmlFor="class-name">Class name</label>
+                    <input
+                      id="class-name"
+                      type="text"
+                      value={className}
+                      onChange={(e) => setClassName(e.target.value)}
+                      placeholder="e.g. Week 1 lecture"
+                      maxLength={255}
+                      className="fet-input"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="fet-label" htmlFor="class-type">Class type</label>
+                      <select
+                        id="class-type"
+                        value={classType}
+                        onChange={(e) => setClassType(e.target.value)}
+                        className="fet-input"
+                      >
+                        <option value="LECTURE">Lecture</option>
+                        <option value="LAB">Lab</option>
+                        <option value="TUTORIAL">Tutorial</option>
+                        <option value="SEMINAR">Seminar</option>
+                        <option value="WORKSHOP">Workshop</option>
+                        <option value="OTHER">Other</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="fet-label" htmlFor="class-location">Location (optional)</label>
+                      <input
+                        id="class-location"
+                        type="text"
+                        value={location}
+                        onChange={(e) => setLocation(e.target.value)}
+                        placeholder="e.g. LT-2"
+                        maxLength={255}
+                        className="fet-input"
+                      />
+                    </div>
+                  </div>
+
+                  {selected ? (
                     <p className="text-xs text-text-secondary bg-page-bg rounded-lg p-3 flex items-start gap-2">
                       <Users size={14} className="mt-0.5 shrink-0" />
                       <span>
-                        Creating this classroom will enrol all {selected.cohort_size} registered student
-                        {selected.cohort_size === 1 ? '' : 's'} into it right away, so you can post
-                        materials and assignments immediately.
+                        This adds a class to <strong>{selected.course_code} — {selected.course_title}</strong>
+                        {selected.semester ? ` (${selected.semester})` : ''}. Students only see it if they
+                        are actively enrolled in this offering. No students, materials or marks are
+                        copied, and no one is enrolled for you.
                       </span>
                     </p>
-                  )}
+                  ) : null}
 
                   <div className="flex justify-end gap-2">
                     <button onClick={() => setShowCreate(false)} className="fet-btn-secondary">Cancel</button>
                     <button
                       onClick={handleCreate}
-                      disabled={creating || !selectedCourse}
+                      disabled={creating || !selectedOffering || !className.trim()}
                       className="fet-btn-primary flex items-center gap-2"
                     >
                       {creating ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                      Create classroom
+                      {creating ? 'Creating...' : 'Create class'}
                     </button>
                   </div>
                 </>

@@ -103,7 +103,7 @@ const DepartmentPanel = () => {
   const [error, setError] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ code: '', name: '', faculty: '', description: '' });
+  const [form, setForm] = useState({ code: '', name: '', faculty: '' });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -127,13 +127,14 @@ const DepartmentPanel = () => {
       // Department carries no `description` column (model, read serializer and
       // DepartmentCreateSerializer all omit it), and the create serializer
       // rejects unknown keys outright. Sending it failed every creation with
-      // "This field is not permitted.", so the description is not on the wire.
+      // "This field is not permitted." — so it is neither on the wire nor
+      // offered in the form.
       await academicsApi.createDepartment({
         code: form.code.trim().toUpperCase(),
         name: form.name.trim(),
         faculty: form.faculty,
       });
-      setForm({ code: '', name: '', faculty: '', description: '' });
+      setForm({ code: '', name: '', faculty: '' });
       setShowForm(false);
       await load();
     } catch (err) {
@@ -200,14 +201,10 @@ const DepartmentPanel = () => {
                   placeholder="Faculty UUID"
                 />
               </div>
-              <div>
-                <label className="fet-label">Description</label>
-                <input
-                  className="fet-input"
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                />
-              </div>
+              {/* No Description input: Department has no `description` column
+                  on the model or in the read serializer, so anything typed
+                  here would be refused as "This field is not permitted." — a
+                  field the server cannot store has no business being offered. */}
               <div className="flex justify-end">
                 <button type="submit" className="fet-btn-primary" disabled={busy}>
                   {busy ? 'Creating...' : 'Create department'}

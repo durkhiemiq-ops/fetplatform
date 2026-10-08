@@ -10,6 +10,7 @@ import LecturerDashboard from './components/Dashboard/LecturerDashboard';
 import CoordinatorDashboard from './components/Dashboard/CoordinatorDashboard';
 import Login from './components/Auth/Login';
 import SignUp from './components/Auth/SignUp';
+import PendingApproval from './components/Auth/PendingApproval';
 import ChangePassword from './components/Auth/ChangePassword';
 import ProfilePage from './components/Profile/ProfilePage';
 import AttendanceDashboard from './components/Attendance/AttendanceDashboard';
@@ -24,8 +25,10 @@ import Timetable from './components/Academic/Timetable';
 import CarryOverPage from './components/Academic/CarryOverPage';
 import NotificationList from './components/Notifications/NotificationList';
 import RosterUpload from './components/Admin/RosterUpload';
+import LecturerApprovals from './components/Admin/LecturerApprovals';
 import AuditLogConsole from './components/Admin/AuditLogConsole';
 import RegistrationPage from './Pages/Courses/RegistrationPage';
+import CurriculumRegistration from './Pages/Courses/CurriculumRegistration';
 import AdminDashboard from './Pages/Admin/AdminDashboard';
 import MobileSimulator from './components/Mobile/MobileSimulator';
 import MyCourses from './Pages/Lessons/MyCourses';
@@ -75,6 +78,10 @@ const DashboardRoutes = ({ user }) => (
       path="/register"
       element={<RequireRole role="student"><RegistrationPage /></RequireRole>}
     />
+    <Route
+      path="/register/curriculum"
+      element={<RequireRole role="student"><CurriculumRegistration /></RequireRole>}
+    />
     <Route path="/academic" element={<AcademicCalendar />} />
     {/* Dev-only device-frame preview tool. It has no sidebar link and is
         deliberately unreachable in a production build. */}
@@ -97,6 +104,10 @@ const DashboardRoutes = ({ user }) => (
     <Route
       path="/admin/roster"
       element={<RequireRole role="admin"><RosterUpload /></RequireRole>}
+    />
+    <Route
+      path="/admin/lecturers"
+      element={<RequireRole role="admin"><LecturerApprovals /></RequireRole>}
     />
     {/* Mock pages removed. Their live equivalents already exist, so
         old links land somewhere real instead of the catch-all. */}
@@ -170,8 +181,8 @@ function App() {
   const handleLogout = async () => {
     try {
       await authApi.logout();
-    } catch (error) {
-      console.error('Logout error:', error);
+    } catch {
+      // Logout is best-effort: the local session is cleared either way.
     } finally {
       setIsAuthenticated(false);
       setUser(null);
@@ -193,8 +204,9 @@ function App() {
   }
 
   if (!isAuthenticated) {
-    // Public self-registration. Success is NOT a login: the account must verify
-    // its email first, so the callback never establishes a session here.
+    // Public self-registration. Success is NOT a login: the user continues
+    // to the sign-in screen. Sign-in never requires email verification;
+    // email codes are used only for forgot-password recovery.
     if (showSignUp) {
       return <SignUp onSwitchToLogin={() => setShowSignUp(false)} />;
     }
@@ -229,6 +241,24 @@ function Shell({ user, onLogout, onUserChanged }) {
           </Routes>
         </div>
       </div>
+    );
+  }
+
+  // Lecturer approval gate (UX only): a self-registered lecturer is stored
+  // PENDING and holds no academic privileges until an administrator approves
+  // them. They see a waiting screen instead of a dashboard whose every
+  // teaching call would answer 403. The backend predicate
+  // `is_authorized_academic_user` remains the sole enforcement point; this
+  // only reads the server-owned `lecturer_approval_status` from /me/.
+  const approval = String(user?.lecturer_approval_status ?? '').trim().toUpperCase();
+  if (role === 'lecturer' && (approval === 'PENDING' || approval === 'REJECTED')) {
+    return (
+      <PendingApproval
+        user={user}
+        status={approval}
+        onSignOut={onLogout}
+        onUserChanged={onUserChanged}
+      />
     );
   }
 

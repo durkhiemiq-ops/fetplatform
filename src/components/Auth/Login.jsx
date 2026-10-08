@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { authApi } from '../../lib/auth';
-import { Eye, EyeOff, ArrowRight, GraduationCap, Shield, BookOpen } from 'lucide-react';
+import { PasswordRecovery } from './AccountRecovery';
+import { Eye, EyeOff, ArrowRight, GraduationCap } from 'lucide-react';
 
 const Login = ({ onLogin, onSwitchToSignUp }) => {
+  const [journey, setJourney] = useState('login');
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -17,13 +19,13 @@ const Login = ({ onLogin, onSwitchToSignUp }) => {
     const id = identifier.trim();
 
     if (!id || !password) {
-      setError('Please enter your identifier and password.');
+      setError('Please enter your email address and password.');
       setIsLoading(false);
       return;
     }
 
     try {
-      const payload = { identifier: id, password };
+      const payload = { email: id, password };
       const response = await authApi.login(payload);
       // Tokens are set as httpOnly cookies by the backend — JS never sees them.
       const user = response.data?.data ?? response.data;
@@ -44,6 +46,8 @@ const Login = ({ onLogin, onSwitchToSignUp }) => {
       }
     }
   };
+
+  if (journey === 'reset') return <PasswordRecovery initialEmail={identifier} onBack={() => setJourney('login')} />;
 
   return (
     <div className="min-h-screen flex">
@@ -76,12 +80,13 @@ const Login = ({ onLogin, onSwitchToSignUp }) => {
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
               <label htmlFor="identifier" className="fet-label">
-                Matricule, Staff Number or Email
+                Email
               </label>
               <input
                 id="identifier"
-                type="text"
-                placeholder="e.g., FE24A389 or LEC001"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.edu"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 className="fet-input"
@@ -138,35 +143,8 @@ const Login = ({ onLogin, onSwitchToSignUp }) => {
             <button type="button" onClick={onSwitchToSignUp} className="text-primary font-semibold hover:opacity-80 transition-opacity">Register</button>
           </p>
 
-          {/* Demo Accounts */}
-          <div className="mt-8 p-4 rounded-xl border border-border-default bg-page-bg">
-            <p className="text-[12px] font-bold text-text-primary mb-3">Demo Accounts</p>
-            <div className="space-y-2.5">
-              <div className="flex items-center gap-2.5">
-                <div className="w-6 h-6 rounded-md flex items-center justify-center" style={{ backgroundColor: 'rgba(37,99,235,0.1)' }}>
-                  <GraduationCap size={13} className="text-info" />
-                </div>
-                <p className="text-[12px] text-text-secondary">
-                  Student — <span className="font-semibold text-text-primary">FE24A389</span> / <span className="font-semibold text-text-primary">student123</span>
-                </p>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <div className="w-6 h-6 rounded-md flex items-center justify-center" style={{ backgroundColor: 'rgba(63,53,181,0.1)' }}>
-                  <BookOpen size={13} style={{ color: '#3F35B5' }} />
-                </div>
-                <p className="text-[12px] text-text-secondary">
-                  Lecturer — <span className="font-semibold text-text-primary">LEC001</span> / <span className="font-semibold text-text-primary">lecturer123</span>
-                </p>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <div className="w-6 h-6 rounded-md flex items-center justify-center" style={{ backgroundColor: 'rgba(220,38,38,0.1)' }}>
-                  <Shield size={13} className="text-danger" />
-                </div>
-                <p className="text-[12px] text-text-secondary">
-                  Admin — <span className="font-semibold text-text-primary">admin@fet.local</span> / <span className="font-semibold text-text-primary">admin123</span>
-                </p>
-              </div>
-            </div>
+          <div className="mt-6 flex justify-center text-sm">
+            <button type="button" onClick={() => { setPassword(''); setJourney('reset'); }} className="text-primary hover:underline">Forgot password?</button>
           </div>
         </div>
       </div>

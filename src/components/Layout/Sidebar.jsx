@@ -4,7 +4,7 @@ import {
   LayoutDashboard, BookOpen, ClipboardCheck, FolderKanban, Megaphone,
   UserCircle, Settings, LogOut, Menu, X, BarChart3,
   CalendarDays, ChevronRight, Bell, BookPlus, CalendarClock, FilePlus2,
-  Upload, Building2, KeyRound, ShieldCheck,
+  Upload, Building2, KeyRound, ShieldCheck, UserCheck, GraduationCap,
 } from 'lucide-react';
 import { normalizeRole } from '../../lib/profile';
 import { notificationsApi } from '../../lib/notifications';
@@ -33,6 +33,7 @@ const MORE = [
   { path: '/timetable', icon: CalendarClock, label: 'Timetable', area: 'classrooms' },
   { path: '/carry-over', icon: FilePlus2, label: 'Carry-over', area: 'classrooms' },
   { path: '/register', icon: BookPlus, label: 'Register courses', area: 'classrooms', roles: ['student'] },
+  { path: '/register/curriculum', icon: GraduationCap, label: 'Curriculum registration', area: 'classrooms', roles: ['student'] },
   { path: '/academic', icon: CalendarDays, label: 'Academic calendar', area: 'hub' },
 ];
 
@@ -41,6 +42,7 @@ const MORE = [
 const ADMIN_ONLY = [
   { path: '/admin/dashboard', icon: LayoutDashboard, label: 'Admin dashboard', area: 'hub' },
   { path: '/admin/roster', icon: Upload, label: 'Roster upload', area: 'hub' },
+  { path: '/admin/lecturers', icon: UserCheck, label: 'Lecturer approvals', area: 'hub' },
   { path: '/admin/audit', icon: ShieldCheck, label: 'Audit log', area: 'hub' },
   { path: '/admin/academic', icon: Building2, label: 'Academic setup', area: 'hub' },
 ];

@@ -1,8 +1,8 @@
 ﻿import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Calendar, Clock, QrCode, Plus,
-  Eye, X, Monitor, Square, Loader2, RefreshCw, Pencil, Award, CreditCard, Trash2, AlertCircle,
-  UserCheck, Search, ChevronDown, CheckCircle2, ClipboardCheck,
+  Eye, X, Monitor, Square, Loader2, RefreshCw, Pencil, AlertCircle,
+  UserCheck, Search, ChevronDown, CheckCircle2, ClipboardCheck, Users,
 } from 'lucide-react';
 import attendanceApi from '../../lib/attendance';
 import AttendanceSession from './AttendanceSession';
@@ -126,7 +126,6 @@ const getRecordStatusColor = (status) => {
 const StudentAttendance = ({ user }) => {
   const [station, setStation] = useState(null);
   const [history, setHistory] = useState([]);
-  const [points, setPoints] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
   const [error, setError] = useState('');
@@ -134,14 +133,12 @@ const StudentAttendance = ({ user }) => {
 
   const load = useCallback(async () => {
     try {
-      const [stationData, historyData, pointsData] = await Promise.all([
+      const [stationData, historyData] = await Promise.all([
         attendanceApi.myStation(),
         attendanceApi.myAttendance(),
-        attendanceApi.myPoints(),
       ]);
       setStation(stationData || null);
       setHistory(Array.isArray(historyData) ? historyData : []);
-      setPoints(pointsData);
       setError('');
     } catch (err) {
       // Any failure must not leave a stale station banner on screen.
@@ -195,7 +192,7 @@ const StudentAttendance = ({ user }) => {
           <div>
             <h3 className="text-lg font-bold text-text-primary">Check-in now</h3>
             <p className="text-sm text-text-secondary">
-              {liveStation ? 'You are a station â€” classmates scan your QR.' : 'Scan the QR your lecturer is showing to record your presence.'}
+              {liveStation ? 'You are a station: classmates scan your QR.' : 'Scan the QR your lecturer is showing to record your presence.'}
             </p>
           </div>
           {!liveStation && (
@@ -206,39 +203,18 @@ const StudentAttendance = ({ user }) => {
         </div>
       </div>
 
-      {points && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="fet-card p-5">
-            <div className="flex items-center gap-3">
-              <Award size={24} className="text-primary" />
-              <div>
-                <p className="text-2xl font-bold text-text-primary">{points.total_points}</p>
-                <p className="text-xs text-text-secondary">Total points</p>
-              </div>
-            </div>
-          </div>
-          <div className="fet-card p-5">
-            <div className="flex items-center gap-3">
-              <CreditCard size={24} className="text-primary" />
-              <div>
-                <p className="text-sm font-semibold text-text-primary">
-                  {points.is_special_day ? `x${points.special_day_multiplier} (birthday!)` : 'x1'}
-                </p>
-                <p className="text-xs text-text-secondary">Multiplier today</p>
-              </div>
-            </div>
-          </div>
-          <div className="fet-card p-5">
-            <div className="flex items-center gap-3">
-              <Calendar size={24} className="text-primary" />
-              <div>
-                <p className="text-sm font-semibold text-text-primary">{history.length}</p>
-                <p className="text-xs text-text-secondary">Sessions attended</p>
-              </div>
+      {/* One honest summary card: the MVP has no points surface to show. */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="fet-card p-5">
+          <div className="flex items-center gap-3">
+            <Calendar size={24} className="text-primary" />
+            <div>
+              <p className="text-sm font-semibold text-text-primary">{history.length}</p>
+              <p className="text-xs text-text-secondary">Sessions attended</p>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       <div className="fet-card overflow-hidden">
         <div className="p-6 border-b border-border-default">
@@ -294,6 +270,7 @@ const LecturerAttendance = () => {
   const [selectedSession, setSelectedSession] = useState(null);
   const [showProjector, setShowProjector] = useState(false);
   const [projectorToken, setProjectorToken] = useState(null);
+  const [projectorStudent, setProjectorStudent] = useState('');
   const [projectorError, setProjectorError] = useState('');
   const [projectorRemaining, setProjectorRemaining] = useState(0);
   const [projectorExpiresIn, setProjectorExpiresIn] = useState(10);
@@ -307,6 +284,7 @@ const LecturerAttendance = () => {
   const [rosterError, setRosterError] = useState('');
   const [correctingRecord, setCorrectingRecord] = useState(null);
   const [correctionStatus, setCorrectionStatus] = useState('PRESENT');
+  const [correctionReason, setCorrectionReason] = useState('');
   const [flash, setFlash] = useState('');
 
   useEffect(() => {
@@ -369,6 +347,7 @@ const LecturerAttendance = () => {
         const first = data?.tokens?.[0];
         if (first?.token) {
           setProjectorToken(first.token);
+          setProjectorStudent(first.student_name || '');
           setProjectorError('');
           setProjectorExpiresIn(data.expires_in_seconds || 10);
         } else {
@@ -403,7 +382,7 @@ const LecturerAttendance = () => {
 
   const loadRecords = async (session) => {
     try {
-      const data = await attendanceApi.sessionRecords(session.class_session_id || session.class_session);
+      const data = await attendanceApi.sessionRecords(session.id);
       setRecords((prev) => ({ ...prev, [session.id]: Array.isArray(data) ? data : [] }));
     } catch {
       setRecords((prev) => ({ ...prev, [session.id]: [] }));
@@ -457,9 +436,7 @@ const LecturerAttendance = () => {
         setRosterLoading(false);
         setRosterError('The roster request did not respond. Check your connection and try again.');
       }, 10000);
-      const classSessionId = session.class_session_id || session.class_session;
-      if (!classSessionId) throw new Error('This session is not linked to a class roster.');
-      const data = await attendanceApi.eligibleStudents(classSessionId);
+      const data = await attendanceApi.eligibleStudents(session.id);
       setRoster(Array.isArray(data) ? data : []);
     } catch (err) {
       setRoster([]);
@@ -527,13 +504,17 @@ const LecturerAttendance = () => {
 
   const handleCorrect = async (record) => {
     try {
-      const updated = await attendanceApi.correctRecord(record.id, { status: correctionStatus });
+      const updated = await attendanceApi.correctRecord(record.id, {
+        status: correctionStatus,
+        reason: correctionReason.trim(),
+      });
       const sessId = record.attendance_session;
       setRecords((prev) => ({
         ...prev,
         [sessId]: (prev[sessId] || []).map((r) => (r.id === updated.id ? { ...r, status: updated.status } : r)),
       }));
       setCorrectingRecord(null);
+      setCorrectionReason('');
       setFlash('Attendance record corrected.');
       setTimeout(() => setFlash(''), 3000);
     } catch (err) {
@@ -541,21 +522,6 @@ const LecturerAttendance = () => {
     }
   };
 
-  const handleDeleteRecord = async (record) => {
-    if (!window.confirm(`Delete the attendance record for ${record.student_name}? This removes it permanently.`)) return;
-    try {
-      const sessId = record.attendance_session;
-      await attendanceApi.deleteRecord(record.id);
-      setRecords((prev) => ({
-        ...prev,
-        [sessId]: (prev[sessId] || []).filter((r) => r.id !== record.id),
-      }));
-      setFlash('Attendance record deleted.');
-      setTimeout(() => setFlash(''), 3000);
-    } catch (err) {
-      alert(err.response?.data?.error?.message || 'Could not delete the record.');
-    }
-  };
 
   const displaySessions = useMemo(() => {
     // One row per class: the newest still-running session, else the newest
@@ -589,7 +555,7 @@ const LecturerAttendance = () => {
         area="attendance"
         icon={ClipboardCheck}
         title="Attendance"
-        subtitle="Take a register with a projected code, or hand stations to students. Records and points save as people scan."
+        subtitle="Take a register with a projected code, or hand stations to students. Records save as people scan."
         crumb={[{ label: 'FET Platform' }, { label: 'Attendance' }]}
         actions={(
           <button type="button" onClick={() => setShowCreateSession(true)} className="fet-btn-primary">
@@ -619,8 +585,8 @@ const LecturerAttendance = () => {
       <div className="space-y-4">
         {displaySessions.map((session) => {
           const present = session.present ?? session.total_present ?? 0;
-          const eligible = session.total_eligible ?? 'â€”';
-          const pct = eligible === 'â€”' || eligible === 0 ? 0 : Math.round((present / eligible) * 100);
+          const eligible = session.total_eligible ?? '—';
+          const pct = eligible === '—' || eligible === 0 ? 0 : Math.round((present / eligible) * 100);
           const left = secondsLeft(new Date(session.expires_at).getTime(), now);
           return (
             <div key={session.id} className="ui-live">
@@ -662,13 +628,19 @@ const LecturerAttendance = () => {
                   ))}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => { setSelectedSession(session); setShowProjector(true); }}
-                    className="fet-btn-primary"
-                  >
-                    <Monitor size={15} /> Project code
-                  </button>
+                  {session.mode !== 'STATIONS' ? (
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedSession(session); setShowProjector(true); }}
+                      className="fet-btn-primary"
+                    >
+                      <Monitor size={15} /> Project code
+                    </button>
+                  ) : (
+                    <span className="fet-btn-secondary" aria-hidden="true">
+                      <Users size={15} /> Stations mode
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => { setSelectedSession(session); loadRecords(session); loadCheckpoints(session.id); }}
@@ -850,7 +822,10 @@ const LecturerAttendance = () => {
           <p className="text-white font-mono text-xl mt-6 font-bold tracking-widest break-all max-w-xl text-center">
             {projectorToken || (projectorError ? 'No QR code' : 'Generating QR...')}
           </p>
-          <p className="text-white/60 mt-2">Students scan to mark attendance â€” {activeSession.course_code} Â· {activeSession.class_name}</p>
+          <p className="mt-2 text-white/60">
+            {projectorStudent ? `Student: ${projectorStudent} | ` : ''}
+            {activeSession.course_code} | {activeSession.class_name}
+          </p>
         </div>
       )}
 
@@ -870,7 +845,7 @@ const LecturerAttendance = () => {
                   </button>
                 )}
                 <button onClick={() => { setSelectedSession(null); setCorrectingRecord(null); }} className="p-1 hover:bg-page-bg rounded-lg">
-                  <span className="text-2xl">Ã—</span>
+                  <X size={18} />
                 </button>
               </div>
             </div>
@@ -906,17 +881,14 @@ const LecturerAttendance = () => {
                       <td>
                         <div className="flex items-center gap-3">
                           <button
-                            onClick={() => { setCorrectingRecord(record); setCorrectionStatus(record.status); }}
+                            onClick={() => {
+                              setCorrectingRecord(record);
+                              setCorrectionStatus(record.status);
+                              setCorrectionReason('');
+                            }}
                             className="flex items-center gap-1 text-xs text-primary hover:underline"
                           >
                             <Pencil size={14} /> Correct
-                          </button>
-                          <button
-                            onClick={() => handleDeleteRecord(record)}
-                            className="flex items-center gap-1 text-xs text-red-500 hover:underline"
-                            title="Delete this record permanently"
-                          >
-                            <Trash2 size={14} /> Delete
                           </button>
                         </div>
                       </td>
@@ -948,9 +920,24 @@ const LecturerAttendance = () => {
                       <option value="EXCUSED">Excused</option>
                     </select>
                   </div>
+                  <div>
+                    <label className="fet-label">Reason</label>
+                    <textarea
+                      value={correctionReason}
+                      onChange={(e) => setCorrectionReason(e.target.value)}
+                      className="fet-input resize-none"
+                      rows={3}
+                      maxLength={2000}
+                      placeholder="Explain why this record is being corrected"
+                    />
+                  </div>
                 </div>
                 <div className="mt-3 flex gap-2">
-                  <button onClick={() => handleCorrect(correctingRecord)} className="fet-btn-primary">
+                  <button
+                    onClick={() => handleCorrect(correctingRecord)}
+                    className="fet-btn-primary"
+                    disabled={!correctionReason.trim() || correctionStatus === correctingRecord.status}
+                  >
                     Save Correction
                   </button>
                   <button onClick={() => setCorrectingRecord(null)} className="fet-btn-secondary">

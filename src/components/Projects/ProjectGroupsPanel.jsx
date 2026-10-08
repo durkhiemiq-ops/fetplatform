@@ -38,8 +38,17 @@ const ProjectGroupsPanel = ({ project, canManageGroups, canManageProject, onChan
       const g = await projectsApi.listGroups(project.id);
       setGroups(Array.isArray(g) ? g : []);
       if (canManageGroups) {
-        const u = await projectsApi.unassigned(project.id);
-        setUnassigned(Array.isArray(u) ? u : []);
+        try {
+          const u = await projectsApi.unassigned(project.id);
+          setUnassigned(Array.isArray(u) ? u : []);
+        } catch (unassignedErr) {
+          // The course-enrollment assignment endpoint was never built; its
+          // client stub rejects with "... is not available yet." That is a
+          // known gap, not a load failure, so degrade to an empty placement
+          // list. Any other error (auth, network, server) still banners.
+          if (!String(unassignedErr?.message).endsWith('is not available yet.')) throw unassignedErr;
+          setUnassigned([]);
+        }
       } else {
         setUnassigned([]);
       }
