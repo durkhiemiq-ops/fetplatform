@@ -7,9 +7,14 @@ the frontend needs to be meaningfully alive on first login:
 - One SUPERUSER admin, one LECTURER, two STUDENTs — all with
   ``is_email_verified=True`` (bypassing the OTP gate deliberately in seed data;
   BR-209 is a product-environment gate, not a demo impediment)
-- SchoolYear + current Semester
+- SchoolYear + a current Semester whose window contains today
 - ClassSession (the anchor for all attendance)
-- Enrollment rows linking students to courses
+- One CourseOffering per demo course, taught by the demo lecturer, each with
+  one class definition (API §22) — this is what ``GET /lecturers/me/courses/``
+  reads, so without it the lecturer's workspace opens empty
+- Enrollment rows linking students to courses, each pointing at that offering —
+  ``GET /students/me/courses/`` only returns enrollments that carry an offering,
+  so offering-less legacy rows leave the student's workspace empty too
 - One demo Project with tasks, a group, and a milestone
 - One Announcement and one Notification
 
@@ -24,14 +29,17 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from apps.academic.models import (
+    ClassSchedule,
     ClassSession,
     Course,
+    CourseOffering,
     Department,
     Enrollment,
     Faculty,
     SchoolYear,
     Semester,
 )
+from apps.academic.services.structure_service import create_class_definition
 from apps.accounts.models import User
 from apps.announcements.models import Announcement
 from apps.notifications.services.notification_service import notify_role_changed
@@ -108,7 +116,7 @@ class Command(BaseCommand):
         lecturer.set_password("lecturer123")
         lecturer.save()
 
-        student_a, _ = User.objects.get_or_create(
+        student_a, made_a = User.objects.get_or_create(
             email="alex.scholar@fet.edu",
             defaults={"username": "alex.scholar"},
         )
@@ -178,14 +186,144 @@ class Command(BaseCommand):
             },
         )
 
+        # ---- Current term ----
+        # The platform only asks for a semester flagged ``is_current``; the real
+        # term boundaries and registration windows are an institutional policy
+        # this repository does not specify (reported in
+        # docs/mvp-integration-context.md, not invented here). The demo keeps a
+        # single current term that always contains today, on a three-term
+        # convention so no date is ever left uncovered, and lets
+        # ``Semester.save()`` retire the lapsed term it supersedes.
+        today = timezone.localdate()
+        current_semester = Semester.objects.filter(is_current=True).first()
+        if current_semester is None or not (
+            current_semester.start_date <= today <= current_semester.end_date
+        ):
+            if today.month >= 9:
+                term_name = "First Semester"
+                term_start = dt.date(today.year, 9, 1)
+                term_end = dt.date(today.year, 12, 31)
+                year_start = today.year
+            elif today.month <= 4:
+                term_name = "Second Semester"
+                term_start = dt.date(today.year, 1, 1)
+                term_end = dt.date(today.year, 4, 30)
+                year_start = today.year - 1
+            else:
+                term_name = "Summer Semester"
+                term_start = dt.date(today.year, 5, 1)
+                term_end = dt.date(today.year, 8, 31)
+                year_start = today.year - 1
+            school_year, _ = SchoolYear.objects.get_or_create(
+                name=f"{year_start}/{year_start + 1}",
+                defaults={
+                    "start_date": dt.date(year_start, 9, 1),
+                    "end_date": dt.date(year_start + 1, 8, 31),
+                },
+            )
+            current_semester, _ = Semester.objects.get_or_create(
+                school_year=school_year,
+                name=term_name,
+                defaults={"start_date": term_start, "end_date": term_end},
+            )
+            # Re-running after the term rolls over refreshes the window instead
+            # of leaving the lapsed dates authoritative.
+            current_semester.start_date = term_start
+            current_semester.end_date = term_end
+            current_semester.is_current = True
+            current_semester.save()
+        if (
+            current_semester.registration_deadline is None
+            or current_semester.registration_deadline < today
+        ):
+            current_semester.registration_deadline = min(
+                current_semester.end_date, today + dt.timedelta(days=30)
+            )
+            current_semester.save()
+        created["semester"] = f"{current_semester} (deadline {current_semester.registration_deadline})"
+
+        # ---- Course offerings + class definitions ----
+        # Courses and legacy ClassSessions alone left both demo roles staring
+        # at empty lists: the lecturer view reads CourseOffering, the student
+        # view reads enrollments that carry one. One offering per demo course
+        # under the current term, taught by the demo lecturer, each given a
+        # single class definition — the Decision A meaning of "Create class",
+        # never a ClassSession and never a roster copy.
+        offerings = {}
+        class_definitions = 0
+        slots = [
+            ("MONDAY", dt.time(8, 0), dt.time(9, 30)),
+            ("TUESDAY", dt.time(10, 0), dt.time(11, 30)),
+            ("WEDNESDAY", dt.time(13, 0), dt.time(14, 30)),
+            ("THURSDAY", dt.time(8, 0), dt.time(9, 30)),
+            ("FRIDAY", dt.time(10, 0), dt.time(11, 30)),
+        ]
+        for index, (code, course) in enumerate(courses.items()):
+            offering, _ = CourseOffering.objects.get_or_create(
+                course=course,
+                semester=current_semester,
+                defaults={
+                    "department": course.department,
+                    "lecturer": lecturer,
+                    "status": "ACTIVE",
+                    "registration_deadline": current_semester.registration_deadline,
+                },
+            )
+            offerings[code] = offering
+            if offering.lecturer_id != lecturer.pk:
+                # Someone else's offering: the seed never steals ownership, and
+                # it could not author a class under it anyway.
+                continue
+            if offering.schedules.filter(is_active=True).exists():
+                continue
+            day, start, end = slots[index % len(slots)]
+            create_class_definition(
+                actor=lecturer,
+                offering=offering,
+                data={
+                    "name": f"{code} Lecture",
+                    "class_type": ClassSchedule.ClassType.LECTURE,
+                    "location": "Demo Lecture Hall",
+                    "day_of_week": day,
+                    "start_time": start,
+                    "end_time": end,
+                },
+            )
+            class_definitions += 1
+        created["offerings"] = len(offerings)
+        created["class_definitions"] = class_definitions
+
         # ---- Enrollments (attendance eligibility) ----
         enroll_count = 0
+        offering_attached = 0
         for matricule in ("FE24A389", "FE24B456"):
             student = User.objects.get(matricule=matricule)
             for code in ("CEF444", "CEF450", "CEF462", "CEF476"):
-                _, made = Enrollment.objects.get_or_create(student=student, course=courses[code])
+                enrollment, made = Enrollment.objects.get_or_create(
+                    student=student, course=courses[code]
+                )
                 enroll_count += int(made)
+                # A legacy row that carries no offering is invisible to
+                # ``GET /students/me/courses/``. Attach the demo offering so the
+                # student's classroom list renders, unless the row was dropped
+                # (BR-014: the seed never resurrects a drop) or another row
+                # already holds this offering.
+                if (
+                    enrollment.course_offering_id is not None
+                    or enrollment.dropped_at is not None
+                    or not enrollment.is_active
+                    or code not in offerings
+                ):
+                    continue
+                if Enrollment.objects.filter(
+                    student=student, course_offering=offerings[code]
+                ).exists():
+                    continue
+                enrollment.course_offering = offerings[code]
+                enrollment.save(update_fields=["course_offering", "updated_at"])
+                offering_attached += 1
         created["enrollments"] = enroll_count
+        created["offering_enrollments"] = offering_attached
 
         # ---- Demo project with one group, task, milestone ----
         project, _ = Project.objects.get_or_create(
@@ -232,7 +370,10 @@ class Command(BaseCommand):
             },
         )
         try:
-            notify_role_changed(account=student_a, old_role=None, new_role="STUDENT")
+            # The seed is idempotent and re-runnable: only announce the role
+            # on first creation, otherwise every run spams a duplicate.
+            if made_a:
+                notify_role_changed(account=student_a, old_role=None, new_role="STUDENT")
         except Exception:  # pragma: no cover - notification fan-out is demo-breadth only
             pass
 
@@ -245,3 +386,9 @@ class Command(BaseCommand):
         self.stdout.write("  alex.scholar@fet.edu student123")
         self.stdout.write("  emma.watson@fet.edu  student123")
         self.stdout.write(f"Courses: {len(courses)}; class sessions: {created['class_sessions']}")
+        self.stdout.write(f"Current semester: {created['semester']}")
+        self.stdout.write(
+            f"Offerings: {created['offerings']}; "
+            f"class definitions: {created['class_definitions']}; "
+            f"enrollments attached to an offering: {created['offering_enrollments']}"
+        )
