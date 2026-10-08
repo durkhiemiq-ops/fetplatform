@@ -1,13 +1,19 @@
 """Compatibility adapter: ``/api/v1/auth/*`` -> canonical account views.
 
-The integrated frontend addresses session authentication below ``/auth/``.
-Account creation is deliberately absent: institution roster workflows create
-accounts and assign institutional identity; anonymous callers cannot create an
-account or choose an identity through a compatibility alias.
+The integrated frontend addresses session authentication below ``/auth/``. This
+module re-points those paths at the views that already own the behaviour, so
+the two namespaces cannot drift apart in authorization, audit logging, or the
+response envelope. It deliberately contains no business logic.
 
-Most routes delegate to canonical account views. Password change lives here
-because the integrated client addresses the auth namespace; it applies the
-same service-boundary rules, audit discipline, and response envelope.
+Registration **is** exposed here (``register/`` and ``self-register/``): both
+are thin aliases onto the single canonical ``SelfRegisterView``, which is the
+only place that decides a new account's role and approval status. Anonymous
+callers may therefore create an account through either namespace, but no field
+they send can choose a role or grant a privilege.
+
+Permission classes are inherited unchanged from the views these routes alias,
+so the classification documented in ``apps/accounts/urls.py`` applies to both
+namespaces.
 
 Why ``refresh/`` exists at all
 ------------------------------
@@ -25,6 +31,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
 from . import views
+from .recovery_views import ForgotPasswordView, ResetPasswordView
 from .services.auth_service import (
     InvalidCurrentPasswordError,
     PasswordPolicyError,
@@ -91,6 +98,9 @@ class ChangePasswordView(APIView):
 
 
 urlpatterns = [
+    path("forgot-password/", ForgotPasswordView.as_view(), name="auth-forgot-password"),
+    path("reset-password/", ResetPasswordView.as_view(), name="auth-reset-password"),
+    path("resend-verification/", views.ResendVerificationView.as_view(), name="auth-resend-verification"),
     path("login/", views.LoginView.as_view(), name="auth-login"),
     path("logout/", views.LogoutView.as_view(), name="auth-logout"),
     path("me/", views.CurrentUserView.as_view(), name="auth-me"),

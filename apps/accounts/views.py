@@ -1,6 +1,8 @@
 import logging
+import secrets
 
 from django.contrib import auth
+from django.db import transaction
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
@@ -10,9 +12,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework.generics import GenericAPIView
 
 from core.academic_access import is_admin_user, is_authorized_academic_user
 from core.audit import write_audit_entry
+from core.permissions import IsAdministrator
 
 from .models import User
 from .serializers import (
@@ -139,11 +143,10 @@ class SelfRegisterView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        department = data.get("_department")
         try:
             account = register_account(
                 email=data["email"],
-                username=self._username_for(data, department),
+                username=self._username_for(data),
                 first_name=data["first_name"],
                 last_name=data["last_name"],
                 password=data["password"],
@@ -153,10 +156,7 @@ class SelfRegisterView(APIView):
                 lecturer_approval_status=resolve_lecturer_approval(
                     data["account_type"]
                 ),
-                department_id=department.pk if department is not None else None,
-                level=data.get("level") or "",
                 matricule=data.get("matricule") or None,
-                staffid=data.get("staffid") or None,
             )
         except (DuplicateAccountError, IdentityNotFoundError) as exc:
             # BR-203: indistinguishable from a generic validation failure so a
@@ -171,7 +171,7 @@ class SelfRegisterView(APIView):
         except AuthError as exc:
             return _error_response(str(exc), "INVALID_DATA", status.HTTP_400_BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001 - never leak a traceback
-            logger.exception("self-registration failed unexpectedly")
+            logger.warning("self-registration failed unexpectedly (%s)", type(exc).__name__)
             return _error_response(
                 "Registration failed. Please check your details.",
                 "INVALID_DATA",
@@ -207,20 +207,9 @@ class SelfRegisterView(APIView):
         )
 
     @staticmethod
-    def _username_for(data, department) -> str:
-        """Derive a login identifier server-side.
-
-        Prefers the applicant-supplied matricule/staff number, else falls back
-        to the email. Never trusts a client-chosen username, which would
-        otherwise be a second, unaudited identity claim.
-        """
-        for key in ("matricule", "staffid"):
-            value = str(data.get(key) or "").strip()
-            if value:
-                return value
-        if department is not None:
-            return f"{department.code or 'acct'}-{data['email'].split('@')[0]}"
-        return data["email"].split("@")[0]
+    def _username_for(data) -> str:
+        """Internal identifier; equal email localparts must never collide."""
+        return f"account-{secrets.token_hex(24)}"
 
 
 class LecturerApprovalView(APIView):
@@ -255,18 +244,21 @@ class LecturerApprovalView(APIView):
             if serializer.validated_data["decision"] == "approve"
             else User.LecturerApproval.REJECTED
         )
-        applicant.save(update_fields=["lecturer_approval_status"])
-        write_audit_entry(
-            action="lecturer_application_decided",
-            resource_type="account",
-            resource_id=applicant.pk,
-            actor_id=request.user.pk,
-            old_value={"lecturer_approval_status": previous},
-            new_value={
-                "lecturer_approval_status": applicant.lecturer_approval_status
-            },
-            details={"reason": serializer.validated_data.get("reason") or ""},
-        )
+        # BR-210 atomicity: the decision and its audit trail share one
+        # transaction, so a crash between them cannot split the record.
+        with transaction.atomic():
+            applicant.save(update_fields=["lecturer_approval_status"])
+            write_audit_entry(
+                action="lecturer_application_decided",
+                resource_type="account",
+                resource_id=applicant.pk,
+                actor_id=request.user.pk,
+                old_value={"lecturer_approval_status": previous},
+                new_value={
+                    "lecturer_approval_status": applicant.lecturer_approval_status
+                },
+                details={"reason": serializer.validated_data.get("reason") or ""},
+            )
         return _success_response(
             {
                 "id": str(applicant.pk),
@@ -308,16 +300,10 @@ class LoginView(APIView):
                 "ACCOUNT_DISABLED",
                 status.HTTP_403_FORBIDDEN,
             )
-        if not user.is_email_verified:
-            # Product decision: unverified accounts never establish a session
-            # (one gate, mirroring ACCOUNT_DISABLED).  Reached only after
-            # credentials already matched, so it cannot enumerate addresses.
-            return _error_response(
-                "Please verify your email address before signing in.",
-                "ACCOUNT_NOT_VERIFIED",
-                status.HTTP_403_FORBIDDEN,
-            )
 
+        # Product decision: sign-in never requires email verification.
+        # Email OTP is used only for forgot-password recovery, which issues
+        # and consumes its own purpose-bound codes.
         auth.login(request, user)
         return _success_response(UserSerializer(user).data)
 
@@ -339,7 +325,17 @@ class CurrentUserView(APIView):
     def patch(self, request):
         serializer = UserSerializer(request.user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        # BR-210: self-service profile edits are user-administration acts, so
+        # the change and its audit trail share one transaction.
+        with transaction.atomic():
+            serializer.save()
+            write_audit_entry(
+                action="profile_updated",
+                resource_type="account",
+                resource_id=request.user.pk,
+                actor_id=request.user.pk,
+                details={"updated_fields": sorted(serializer.validated_data.keys())},
+            )
         return _success_response(serializer.data)
 
 
@@ -451,18 +447,21 @@ class VerifyEmailView(APIView):
             user = User.objects.filter(email__iexact=email).first()
             if user is not None:
                 if not user.is_email_verified:
-                    user.is_email_verified = True
-                    user.save(update_fields=["is_email_verified"])
-                    # BR-210: verification flips a security-relevant account
-                    # state and must be traceable like a role change.
-                    write_audit_entry(
-                        action="email_verified",
-                        resource_type="account",
-                        resource_id=user.id,
-                        actor_id=user.id,
-                        old_value=False,
-                        new_value=True,
-                    )
+                    # BR-210 atomicity: the flag flip and its audit trail
+                    # share one transaction.
+                    with transaction.atomic():
+                        user.is_email_verified = True
+                        user.save(update_fields=["is_email_verified"])
+                        # BR-210: verification flips a security-relevant account
+                        # state and must be traceable like a role change.
+                        write_audit_entry(
+                            action="email_verified",
+                            resource_type="account",
+                            resource_id=user.id,
+                            actor_id=user.id,
+                            old_value=False,
+                            new_value=True,
+                        )
                 return _success_response({"message": "Email verified."})
 
         # One generic failure for every failure mode — see class docstring.
@@ -545,3 +544,43 @@ class StudentListView(APIView):
             for student in students
         ]
         return _success_response(rows)
+
+
+class LecturerListView(GenericAPIView):
+    """Administrator view of the lecturer roster, for the approval queue.
+
+    Narrows the general user list (/accounts/, administrator-only) to accounts
+    that act as teaching staff, and surfaces ``lecturer_approval_status`` so an
+    administrator can see who is still PENDING without opening each account.
+
+    Three deliberate constraints:
+
+    * Administrator-only, unlike StudentListView. Applicant identity (email,
+      staff number) is not something lecturers may enumerate.
+    * Reuses UserSerializer, so no password material is ever serialised and
+      the field policy stays defined in exactly one place.
+    * Paginated with the project's configured paginator
+      (``DEFAULT_PAGINATION_CLASS``), so the response shape matches every other
+      paginated endpoint: ``{count, next, previous, results}``.
+
+    A NULL ``lecturer_approval_status`` is returned as-is: that is the state of
+    every pre-existing lecturer and means "not an applicant", not "undecided".
+    """
+
+    permission_classes = [IsAdministrator]
+
+    def get(self, request):
+        lecturers = User.objects.filter(role=User.Role.LECTURER).order_by(
+            "lecturer_approval_status", "first_name", "last_name", "username"
+        )
+        page = self.paginate_queryset(lecturers)
+        serializer = UserSerializer(
+            page if page is not None else lecturers, many=True
+        )
+        if page is not None:
+            # There is no custom renderer in this project: the envelope is
+            # built explicitly by _success_response. get_paginated_response
+            # returns a bare page dict, so it must be wrapped here or this
+            # endpoint would silently answer outside the API contract.
+            return _success_response(self.get_paginated_response(serializer.data).data)
+        return _success_response(serializer.data)

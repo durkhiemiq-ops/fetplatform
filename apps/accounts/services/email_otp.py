@@ -35,6 +35,7 @@ from typing import Optional
 
 from django.conf import settings
 from django.core.cache import cache
+from django.core.cache.backends.locmem import LocMemCache
 from django.core.mail import send_mail
 
 # LocMem (dev/test) has no atomic compare-and-delete; guard the whole
@@ -112,12 +113,13 @@ def normalize_email(email: str) -> str:
     return str(email or "").strip().lower()
 
 
-def _code_key(email: str) -> str:
-    return f"account:email_otp:{email}"
+def _code_key(email: str, purpose: str = "verification") -> str:
+    prefix = "email_otp" if purpose == "verification" else "password_reset_otp"
+    return f"account:{prefix}:{email}"
 
 
-def _attempts_key(email: str) -> str:
-    return f"account:email_otp:attempts:{email}"
+def _attempts_key(email: str, purpose: str = "verification") -> str:
+    return f"{_code_key(email, purpose)}:attempts"
 
 
 def _generate_code() -> str:
@@ -125,7 +127,7 @@ def _generate_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
-def _hash_code(email: str, code: str) -> str:
+def _hash_code(email: str, code: str, purpose: str = "verification") -> str:
     """Keyed (SECRET_KEY-peppered) hash bound to the identity.
 
     A leaked cache dump cannot be reduced to a bare 10^6 rainbow table, and
@@ -133,20 +135,33 @@ def _hash_code(email: str, code: str) -> str:
     """
     return hmac.new(
         settings.SECRET_KEY.encode("utf-8"),
-        f"{email}:{code}".encode("utf-8"),
+        f"{purpose}:{email}:{code}".encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
 
 def _redis_client() -> Optional[object]:
-    """Return a raw Redis client only for Django's Redis cache backend."""
-    backend = getattr(cache, "_cache", None)
-    if backend is None or not hasattr(backend, "get_client"):
+    """Use atomic Redis operations, or explicitly local development/test memory."""
+    backend = cache._connections[cache._alias]
+    if isinstance(backend, LocMemCache):
+        # ``settings.DEBUG`` alone cannot tell the two legitimate LocMem users
+        # from a misconfigured production run: ``settings_dev`` sets DEBUG True,
+        # but Django's test runner forces ``settings.DEBUG = False`` for every
+        # run (``django.test.utils.setup_test_environment``), which would make
+        # the hermetic gate look like production.  ``config.settings_test`` pins
+        # LocMem on purpose and opts in explicitly; nothing else may raise this
+        # flag, so a production cache that is not atomic still fails loudly.
+        allowed = getattr(settings, "EMAIL_OTP_ALLOW_LOCAL_CACHE", settings.DEBUG)
+        if not allowed:
+            raise OTPError("Production OTP verification requires an atomic shared cache")
         return None
-    return backend.get_client(write=True)
+    target = getattr(backend, "client", None) or backend
+    if not hasattr(target, "get_client"):
+        raise OTPError("Unsupported OTP cache backend")
+    # Connection/setup and Lua failures propagate; never downgrade atomicity.
+    return target.get_client(write=True)
 
-
-def issue_otp(email: str) -> str:
+def issue_otp(email: str, *, purpose: str = "verification") -> str:
     """Issue a fresh code, replacing any previous one, and return the raw value.
 
     The raw code is returned exactly once so the caller can email it; only
@@ -159,14 +174,14 @@ def issue_otp(email: str) -> str:
 
     code = _generate_code()
     ttl = get_otp_ttl_seconds()
-    expected = _hash_code(email, code)
+    expected = _hash_code(email, code, purpose)
     client = _redis_client()
     if client is not None:
         client.eval(
             _ISSUE_LUA,
             2,
-            _code_key(email),
-            _attempts_key(email),
+            _code_key(email, purpose),
+            _attempts_key(email, purpose),
             expected,
             ttl,
         )
@@ -174,12 +189,12 @@ def issue_otp(email: str) -> str:
         # Development/test simulation only: one process lock provides the
         # issue/replace atomicity that Redis gives natively.
         with _LOCAL_OTP_LOCK:
-            cache.set(_code_key(email), expected, timeout=ttl)
-            cache.delete(_attempts_key(email))
+            cache.set(_code_key(email, purpose), expected, timeout=ttl)
+            cache.delete(_attempts_key(email, purpose))
     return code
 
 
-def verify_otp(email: str, code: str) -> OTPResult:
+def verify_otp(email: str, code: str, *, purpose: str = "verification") -> OTPResult:
     """Atomically check-and-consume a code.
 
     Exactly-once semantics with no race window (one Lua operation on Redis,
@@ -192,14 +207,14 @@ def verify_otp(email: str, code: str) -> OTPResult:
 
     ttl = get_otp_ttl_seconds()
     max_attempts = get_otp_max_attempts()
-    expected = _hash_code(email, code)
+    expected = _hash_code(email, code, purpose)
     client = _redis_client()
     if client is not None:
         raw = client.eval(
             _VERIFY_LUA,
             2,
-            _code_key(email),
-            _attempts_key(email),
+            _code_key(email, purpose),
+            _attempts_key(email, purpose),
             expected,
             ttl,
             max_attempts,
@@ -207,18 +222,18 @@ def verify_otp(email: str, code: str) -> OTPResult:
         return OTPResult.VERIFIED if raw == 1 else OTPResult.INVALID
 
     with _LOCAL_OTP_LOCK:
-        stored = cache.get(_code_key(email))
+        stored = cache.get(_code_key(email, purpose))
         if stored is None:
             return OTPResult.INVALID
         if hmac.compare_digest(stored, expected):
-            cache.delete(_code_key(email))
-            cache.delete(_attempts_key(email))
+            cache.delete(_code_key(email, purpose))
+            cache.delete(_attempts_key(email, purpose))
             return OTPResult.VERIFIED
-        attempts = int(cache.get(_attempts_key(email)) or 0) + 1
-        cache.set(_attempts_key(email), attempts, timeout=ttl)
+        attempts = int(cache.get(_attempts_key(email, purpose)) or 0) + 1
+        cache.set(_attempts_key(email, purpose), attempts, timeout=ttl)
         if attempts >= max_attempts:
-            cache.delete(_code_key(email))
-            cache.delete(_attempts_key(email))
+            cache.delete(_code_key(email, purpose))
+            cache.delete(_attempts_key(email, purpose))
         return OTPResult.INVALID
 
 

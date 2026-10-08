@@ -193,15 +193,40 @@ class ForcedPasswordChangeTests(AccountSecurityFixture):
         self.assertTrue(response.data["data"]["must_change_password"])
         self.assertEqual(response.data["data"]["role"], User.Role.STUDENT)
 
+    def test_gate_allowlist_covers_both_url_namespaces(self):
+        """A gated account must not be trapped by the compatibility alias.
+
+        Both namespaces are live. If the gate lists only one of them, the other
+        returns 403 for identity and sign-out, leaving the user unable to read
+        its own profile or log out.
+        """
+        self.assertEqual(self.client.get("/api/v1/auth/me/").status_code, 200)
+        self.assertEqual(self.client.get("/api/v1/accounts/me/").status_code, 200)
+
+        # Sign-out must work through both families.
+        canonical = APIClient()
+        canonical.force_login(self.student)
+        self.assertEqual(
+            canonical.post("/api/v1/accounts/logout/").status_code, 200
+        )
+        alias = APIClient()
+        alias.force_login(self.student)
+        self.assertEqual(alias.post("/api/v1/auth/logout/").status_code, 200)
+
     def test_locked_account_can_read_identity_but_not_application_data(self):
         identity = self.client.get("/api/v1/auth/me/")
         self.assertEqual(identity.status_code, 200)
         self.assertTrue(identity.data["data"]["must_change_password"])
 
+        canonical_identity = self.client.get("/api/v1/accounts/me/")
+        self.assertEqual(canonical_identity.status_code, 200)
+        self.assertTrue(canonical_identity.data["data"]["must_change_password"])
+
         for path in (
             "/api/v1/projects/",
             "/api/v1/notifications/",
             "/api/v1/departments/",
+            "/api/v1/accounts/lecturers/",
         ):
             with self.subTest(path=path):
                 response = self.client.get(path)

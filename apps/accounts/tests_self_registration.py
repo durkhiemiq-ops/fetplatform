@@ -10,13 +10,14 @@ Covers the flows the platform can genuinely support:
 What these tests deliberately do **not** claim: that the system can prove
 somebody is a real student or a real member of staff. No university registry
 exists in this repository, so eligibility is limited to what is actually
-knowable here -- department/level validity, identity uniqueness, and email
+knowable here -- identity uniqueness and email
 ownership via one-time code.
 """
 
 from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
+from rest_framework.settings import api_settings
 from rest_framework.test import APIClient
 
 from apps.academic.models import Course, Department, Faculty
@@ -44,6 +45,14 @@ class SelfRegistrationTestBase(TestCase):
             role=User.Role.ADMINISTRATOR, is_email_verified=True,
         )
 
+    def tearDown(self):
+        # settings_test pins LocMemCache, which is process-wide and therefore
+        # NOT reset between test classes. Without this, the throttle counters
+        # these registration tests consume ("register" is only 5/minute) leak
+        # into whatever module runs next and surface there as spurious 429s.
+        # Clearing keeps each test independent without weakening the throttle.
+        cache.clear()
+
     def register(self, **overrides):
         payload = {
             "account_type": "student",
@@ -51,8 +60,6 @@ class SelfRegistrationTestBase(TestCase):
             "first_name": "New",
             "last_name": "Comer",
             "password": PASSWORD,
-            "department": str(self.department.pk),
-            "level": "400",
             "matricule": "FE24A001",
         }
         payload.update(overrides)
@@ -73,8 +80,8 @@ class StudentSelfRegistrationTests(SelfRegistrationTestBase):
         # A self-registered user chose their own password: no forced reset.
         self.assertFalse(account.must_change_password)
         self.assertFalse(account.is_email_verified)
-        self.assertEqual(account.department_id, self.department.pk)
-        self.assertEqual(account.level, "400")
+        self.assertIsNone(account.department_id)
+        self.assertEqual(account.level, "")
 
     def test_password_is_hashed_and_never_returned(self):
         response = self.register()
@@ -129,7 +136,7 @@ class StudentSelfRegistrationTests(SelfRegistrationTestBase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(User.objects.filter(email="newcomer@example.test").exists())
 
-    def test_registration_issues_a_verification_code_and_blocks_login(self):
+    def test_registration_issues_a_verification_code_and_allows_login(self):
         response = self.register()
         self.assertEqual(response.status_code, 201)
         account = User.objects.get(email="newcomer@example.test")
@@ -138,8 +145,8 @@ class StudentSelfRegistrationTests(SelfRegistrationTestBase):
             {"email": account.email, "password": PASSWORD},
             format="json",
         )
-        self.assertEqual(login.status_code, 403)
-        self.assertEqual(login.data["error"]["code"], "ACCOUNT_NOT_VERIFIED")
+        # Product decision: sign-in never requires email verification.
+        self.assertEqual(login.status_code, 200)
 
 
 class LecturerSelfRegistrationTests(SelfRegistrationTestBase):
@@ -150,9 +157,11 @@ class LecturerSelfRegistrationTests(SelfRegistrationTestBase):
             "first_name": "Lee",
             "last_name": "Churer",
             "password": PASSWORD,
-            "staffid": "STF-001",
         }
         payload.update(overrides)
+        # Mirror SelfRegistrationTestBase.register: None means "omit", so a
+        # test can express "no staffid supplied" without sending JSON null.
+        payload = {k: v for k, v in payload.items() if v is not None}
         return self.client.post(
             reverse("accounts:self-register"), payload, format="json"
         )
@@ -266,9 +275,24 @@ class LecturerSelfRegistrationTests(SelfRegistrationTestBase):
             account.lecturer_approval_status, User.LecturerApproval.PENDING
         )
 
-    def test_staffid_must_be_supplied_and_free(self):
-        missing = self.register_lecturer(staffid=None)
-        self.assertEqual(missing.status_code, 400)
+    def test_lecturer_registration_requires_no_staff_code(self):
+        # MVP mandate s8: no fabricated staff code. Nothing authoritative
+        # exists to check such a value against, so the old expectation that a
+        # public applicant must supply one was invalid — not a weakening of
+        # the suite, but a changed requirement.
+        response = self.register_lecturer(staffid=None)
+        self.assertEqual(response.status_code, 201)
+        account = User.objects.get(email="applicant@example.test")
+        self.assertIsNone(account.staffid)
+        self.assertEqual(account.role, User.Role.LECTURER)
+        # Email verification + admin approval remain the whole gate.
+        self.assertEqual(
+            account.lecturer_approval_status, User.LecturerApproval.PENDING
+        )
+        self.assertFalse(is_authorized_academic_user(account))
+
+    def test_public_staffid_is_rejected(self):
+        # Historical staff identifiers remain stored but cannot be self-issued.
         User.objects.create_user(
             "existing-staff@example.test", "existing-staff", "Ex", "Staff",
             PASSWORD, role=User.Role.LECTURER, staffid="STF-999",
@@ -276,18 +300,19 @@ class LecturerSelfRegistrationTests(SelfRegistrationTestBase):
         )
         taken = self.register_lecturer(staffid="STF-999")
         self.assertEqual(taken.status_code, 400)
+        self.assertFalse(
+            User.objects.filter(email="applicant@example.test").exists()
+        )
 
 
 class PrivilegeEscalationTests(SelfRegistrationTestBase):
-    def test_forged_admin_role_in_payload_is_ignored(self):
+    def test_forged_admin_role_in_payload_is_rejected(self):
         response = self.register(role="ADMINISTRATOR")
-        self.assertEqual(response.status_code, 201)
-        account = User.objects.get(email="newcomer@example.test")
-        # The stored role is the one the server resolved, never the payload's.
-        self.assertEqual(account.role, User.Role.STUDENT)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(User.objects.filter(email="newcomer@example.test").exists())
 
     def test_student_cannot_request_the_lecturer_path_and_gain_privileges(self):
-        response = self.register(account_type="lecturer", staffid="STF-777")
+        response = self.register(account_type="lecturer", matricule=None)
         self.assertEqual(response.status_code, 201)
         account = User.objects.get(email="newcomer@example.test")
         # Even on the lecturer path, no privilege without approval.
@@ -310,14 +335,8 @@ class PrivilegeEscalationTests(SelfRegistrationTestBase):
             lecturer_approval_status="APPROVED",
             must_change_password=False,
         )
-        self.assertEqual(response.status_code, 201)
-        account = User.objects.get(email="newcomer@example.test")
-        # Neither forged field bound: approval is server-owned, and a
-        # self-registered user is not on a temporary-password flow.
-        self.assertEqual(
-            account.lecturer_approval_status, User.LecturerApproval.PENDING
-        )
-        self.assertFalse(account.must_change_password)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(User.objects.filter(email="newcomer@example.test").exists())
 
     def test_approval_endpoint_is_not_reachable_anonymously(self):
         response = self.client.post(
@@ -334,7 +353,7 @@ class PrivilegeEscalationTests(SelfRegistrationTestBase):
                 "account_type": "lecturer",
                 "email": "alias@example.test",
                 "first_name": "Al", "last_name": "Ias",
-                "password": PASSWORD, "staffid": "STF-222",
+                "password": PASSWORD,
             },
             format="json",
         )
@@ -398,3 +417,203 @@ def _csv(text):
     from django.core.files.uploadedfile import SimpleUploadedFile
 
     return SimpleUploadedFile("roster.csv", text.encode("utf-8"), "text/csv")
+
+
+class LecturerApprovalSelfEscalationTests(SelfRegistrationTestBase):
+    """A lecturer applicant must not be able to approve themselves.
+
+    ``UserSerializer`` is reused by ``PATCH /accounts/me/``. Any server-owned
+    field left out of ``read_only_fields`` becomes self-writable through that
+    endpoint, which turns an applicant into teaching staff with one request.
+    """
+
+    def _pending_lecturer(self):
+        response = self.register(
+            account_type="lecturer",
+            email="applicant@example.test",
+            matricule=None,
+        )
+        self.assertEqual(response.status_code, 201)
+        account = User.objects.get(email="applicant@example.test")
+        self.assertEqual(account.role, User.Role.LECTURER)
+        self.assertEqual(account.lecturer_approval_status, User.LecturerApproval.PENDING)
+        return account
+
+    def test_patch_me_cannot_self_approve(self):
+        account = self._pending_lecturer()
+        self.client.force_authenticate(user=account)
+
+        response = self.client.patch(
+            reverse("accounts:current-user"),
+            {"lecturer_approval_status": User.LecturerApproval.APPROVED},
+            format="json",
+        )
+
+        self.assertIn(response.status_code, (200, 400))
+        account.refresh_from_db()
+        # The decisive assertion: approval is administrator-owned only.
+        self.assertEqual(account.lecturer_approval_status, User.LecturerApproval.PENDING)
+        self.assertFalse(is_authorized_academic_user(account))
+
+    def test_patch_me_cannot_forge_admin_role_or_verification(self):
+        account = self._pending_lecturer()
+        self.client.force_authenticate(user=account)
+
+        self.client.patch(
+            reverse("accounts:current-user"),
+            {
+                "role": User.Role.ADMINISTRATOR,
+                "is_email_verified": True,
+                "must_change_password": False,
+            },
+            format="json",
+        )
+
+        account.refresh_from_db()
+        self.assertEqual(account.role, User.Role.LECTURER)
+        self.assertEqual(account.lecturer_approval_status, User.LecturerApproval.PENDING)
+
+    def test_administrator_approval_grants_academic_privileges(self):
+        account = self._pending_lecturer()
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post(
+            reverse("accounts:lecturer-approval", args=[str(account.pk)]),
+            {"decision": "approve"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        account.refresh_from_db()
+        self.assertEqual(
+            account.lecturer_approval_status, User.LecturerApproval.APPROVED
+        )
+        self.assertTrue(is_authorized_academic_user(account))
+
+    def test_rejection_withholds_academic_privileges(self):
+        account = self._pending_lecturer()
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.post(
+            reverse("accounts:lecturer-approval", args=[str(account.pk)]),
+            {"decision": "reject", "reason": "No verifiable staff record."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        account.refresh_from_db()
+        self.assertEqual(
+            account.lecturer_approval_status, User.LecturerApproval.REJECTED
+        )
+        self.assertFalse(is_authorized_academic_user(account))
+
+    def test_non_admin_cannot_approve(self):
+        account = self._pending_lecturer()
+        self.client.force_authenticate(user=account)
+
+        response = self.client.post(
+            reverse("accounts:lecturer-approval", args=[str(account.pk)]),
+            {"decision": "approve"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        account.refresh_from_db()
+        self.assertEqual(account.lecturer_approval_status, User.LecturerApproval.PENDING)
+
+    def test_legacy_null_status_retains_lecturer_privileges(self):
+        """NULL means 'not an applicant' and must not silently demote old rows."""
+        lecturer = User.objects.create_user(
+            "legacy@example.test", "legacy", "Leg", "Acy", PASSWORD,
+            role=User.Role.LECTURER, is_email_verified=True,
+        )
+        self.assertIsNone(lecturer.lecturer_approval_status)
+        self.assertTrue(is_authorized_academic_user(lecturer))
+
+
+class LecturerListAuthorizationTests(SelfRegistrationTestBase):
+    """GET /accounts/lecturers/ backs the administrator approval queue."""
+
+    def _lecturer(self, email, status_value):
+        return User.objects.create_user(
+            email, email.split("@")[0], "Le", "Cturer", PASSWORD,
+            role=User.Role.LECTURER, is_email_verified=True,
+            lecturer_approval_status=status_value,
+        )
+
+    def test_admin_sees_lecturers_with_approval_status(self):
+        pending = self._lecturer("pend@example.test", User.LecturerApproval.PENDING)
+        self._lecturer("ok@example.test", User.LecturerApproval.APPROVED)
+        self._lecturer("legacy@example.test", None)
+        User.objects.create_user(
+            "stu@example.test", "stu", "Stu", "Dent", PASSWORD,
+            role=User.Role.STUDENT, is_email_verified=True,
+        )
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.get(reverse("accounts:lecturer-list"))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()["data"]
+        # Paginated with the project's standard paginator, like every other
+        # paginated endpoint: {count, next, previous, results}.
+        self.assertEqual(
+            sorted(body), ["count", "next", "previous", "results"]
+        )
+        self.assertEqual(body["count"], 3)
+        rows = body["results"]
+        # Students are excluded; every lecturer is present.
+        self.assertEqual({r["email"] for r in rows}, {
+            "pend@example.test", "ok@example.test", "legacy@example.test",
+        })
+        by_email = {r["email"]: r for r in rows}
+        self.assertEqual(
+            by_email["pend@example.test"]["lecturer_approval_status"], "PENDING"
+        )
+        self.assertIsNone(
+            by_email["legacy@example.test"]["lecturer_approval_status"]
+        )
+        self.assertNotIn("password", rows[0])
+
+    def test_lecturer_list_paginates_beyond_one_page(self):
+        """The approval queue must not silently hide applicants on page 2."""
+        page_size = api_settings.PAGE_SIZE
+        for i in range(page_size + 3):
+            self._lecturer(
+                f"bulk{i:03d}@example.test", User.LecturerApproval.PENDING
+            )
+        self.client.force_authenticate(user=self.admin)
+
+        first = self.client.get(reverse("accounts:lecturer-list")).json()["data"]
+        self.assertEqual(len(first["results"]), page_size)
+        self.assertIsNotNone(first["next"])
+
+        second = self.client.get(first["next"]).json()["data"]
+        self.assertEqual(len(second["results"]), 3)
+        self.assertIsNone(second["next"])
+
+        seen = {r["email"] for r in first["results"]} | {
+            r["email"] for r in second["results"]
+        }
+        self.assertEqual(len(seen), page_size + 3)
+
+    def test_non_admin_cannot_list_lecturers(self):
+        lecturer = self._lecturer("peer@example.test", User.LecturerApproval.APPROVED)
+        self.client.force_authenticate(user=lecturer)
+        self.assertEqual(
+            self.client.get(reverse("accounts:lecturer-list")).status_code, 403
+        )
+
+    def test_pending_applicant_cannot_list_lecturers(self):
+        applicant = self._lecturer("new@example.test", User.LecturerApproval.PENDING)
+        self.client.force_authenticate(user=applicant)
+        self.assertEqual(
+            self.client.get(reverse("accounts:lecturer-list")).status_code, 403
+        )
+
+    def test_anonymous_cannot_list_lecturers(self):
+        # Session auth yields 403, not 401, for a missing credential — matching
+        # the existing anonymous-approval test.
+        self.assertEqual(
+            self.client.get(reverse("accounts:lecturer-list")).status_code, 403
+        )

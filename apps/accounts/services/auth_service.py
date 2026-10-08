@@ -95,6 +95,7 @@ def _is_active(account: Any) -> bool:
     }
 
 
+@transaction.atomic
 def register_account(
     *,
     email: str,
@@ -178,6 +179,7 @@ def register_account(
     # field. A caller that omits it still gets STUDENT.
     resolved_role = str(role).strip().upper() if role else DEFAULT_ROLE
     extras = {
+        "lecturer_approval_status": lecturer_approval_status if resolved_role == "LECTURER" else None,
         "department_id": department_id,
         "level": str(level or "").strip().upper(),
         "matricule": str(matricule).strip().upper() if matricule else None,
@@ -206,21 +208,18 @@ def register_account(
         account.first_name = str(first_name).strip()
         account.last_name = str(last_name).strip()
         account.role = resolved_role
+        if hasattr(account, "lecturer_approval_status"):
+            account.lecturer_approval_status = lecturer_approval_status if resolved_role == "LECTURER" else None
         if hasattr(account, "is_active"):
             account.is_active = True
         if hasattr(account, "set_password"):
             account.set_password(password)
         account.save()
 
-    # Lecturer approval is a separate concern from email verification and is
-    # only ever set by the server: PENDING for a self-registering applicant,
-    # None (not applicable) for everyone else.
-    if lecturer_approval_status is not None and hasattr(
-        account, "lecturer_approval_status"
-    ):
-        account.lecturer_approval_status = lecturer_approval_status
-        account.save(update_fields=["lecturer_approval_status"])
-
+    write_audit_entry(
+        action="account_registered", resource_type="account", resource_id=account.id,
+        actor_id=account.id, details={"role": resolved_role, "lecturer_approval_status": lecturer_approval_status},
+    )
     return account
 
 

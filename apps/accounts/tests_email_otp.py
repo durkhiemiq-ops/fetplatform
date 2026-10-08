@@ -2,7 +2,7 @@
 
 Evidence covered here, one test per claim:
 - registration dispatches a code and the code never appears in any response;
-- login is blocked with ACCOUNT_NOT_VERIFIED until the address is verified;
+- sign-in never requires email verification; email OTP is only for forgot-password recovery;
 - the correct code verifies, flips is_email_verified, and is audited;
 - the same code cannot verify twice (atomic consume);
 - an expired (TTL-evicted) code fails with the same generic response;
@@ -86,7 +86,7 @@ class EmailOTPFlowTests(TestCase):
         return match.group(1)
 
     def test_full_flow_register_code_blocks_login_verify_allows_login_me(self):
-        """Registration -> OTP email -> blocked login -> verify -> login -> /me/."""
+        """Registration -> OTP email -> login works immediately -> verify -> login -> /me/."""
         response = self._register()
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(len(mail.outbox), 1)
@@ -96,9 +96,9 @@ class EmailOTPFlowTests(TestCase):
         # The OTP is a secret: it must not appear as a value in the response.
         self.assertNotIn(code, [str(v) for v in response.data["data"].values()])
 
-        blocked = self._login()
-        self.assertEqual(blocked.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertEqual(blocked.data["error"]["code"], "ACCOUNT_NOT_VERIFIED")
+        # Product decision: sign-in never requires email verification.
+        immediate = self._login()
+        self.assertEqual(immediate.status_code, status.HTTP_200_OK)
 
         verified = self._verify(self.payload["email"], code)
         self.assertEqual(verified.status_code, status.HTTP_200_OK)
@@ -145,8 +145,8 @@ class EmailOTPFlowTests(TestCase):
         self.assertEqual(response.data["error"]["code"], "VERIFICATION_FAILED")
         self.assertEqual(response.data["error"]["message"], GENERIC_FAILURE)
 
-        # Still locked out: expiry did not weaken the login gate.
-        self.assertEqual(self._login().status_code, status.HTTP_403_FORBIDDEN)
+        # Expiry never blocks sign-in: the OTP gate is forgot-password only.
+        self.assertEqual(self._login().status_code, status.HTTP_200_OK)
 
     def test_resend_issues_fresh_code_and_kills_old_one(self):
         self._register()

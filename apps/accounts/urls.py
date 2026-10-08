@@ -1,10 +1,13 @@
 from django.urls import path
 
 from . import views
+from .recovery_views import ForgotPasswordView, ResetPasswordView
 
 app_name = "accounts"
 
 urlpatterns = [
+    path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
+    path("reset-password/", ResetPasswordView.as_view(), name="reset-password"),
     path("csrf/", views.csrf_token_view, name="csrf_token"),
     # Public self-registration. Student accounts are created STUDENT
     # server-side; lecturer applicants are created PENDING and gain teaching
@@ -27,5 +30,7 @@ urlpatterns = [
         name="resend-verification",
     ),
     path("students/", views.StudentListView.as_view(), name="student-list"),
+    # Administrator-only lecturer roster / approval queue.
+    path("lecturers/", views.LecturerListView.as_view(), name="lecturer-list"),
     path("", views.UserListView.as_view(), name="user-list"),
 ]

@@ -6,69 +6,43 @@ from .models import User
 from .services.registration_eligibility import (
     EligibilityError,
     normalize_account_type,
-    validate_department,
     validate_identity_free,
-    validate_level,
 )
 
 
-class SelfRegisterSerializer(serializers.Serializer):
-    """Public self-registration for students and lecturers.
+class StrictPublicFieldsMixin:
+    """Reject claims the public endpoint does not explicitly accept."""
 
-    There is **no ``role`` field**, by design. A client cannot name its own
-    privilege level because it cannot name one at all: ``account_type`` is a
-    request, and ``registration_eligibility.resolve_role`` turns it into a role
-    the server has already decided on. Sending ``role=ADMINISTRATOR`` is
-    therefore not ignored -- it never binds to anything, because no attribute
-    on this serializer reads it.
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Expected an object.")
+        unexpected = set(data) - set(self.fields)
+        if unexpected:
+            raise serializers.ValidationError({name: "This field is not permitted." for name in sorted(unexpected)})
+        return super().to_internal_value(data)
 
-    BR-002/BR-003: the stored role is server-owned.
-    """
+
+class SelfRegisterSerializer(StrictPublicFieldsMixin, serializers.Serializer):
+    """Account type requests a student account or a pending lecturer application."""
 
     account_type = serializers.ChoiceField(choices=["student", "lecturer"])
     email = serializers.EmailField()
     first_name = serializers.CharField(max_length=150)
     last_name = serializers.CharField(max_length=150)
-    password = serializers.CharField(write_only=True, min_length=8)
-    department = serializers.UUIDField(required=False, allow_null=True, default=None)
-    level = serializers.CharField(required=False, allow_blank=True, default="")
+    password = serializers.CharField(write_only=True, min_length=8, max_length=1024, trim_whitespace=False)
     matricule = serializers.CharField(max_length=50, required=False, allow_blank=True)
-    staffid = serializers.CharField(max_length=50, required=False, allow_blank=True)
 
     def validate(self, attrs):
         try:
             attrs["account_type"] = normalize_account_type(attrs.get("account_type"))
             is_student = attrs["account_type"] == "student"
-
-            # Students are tied to a department and level because both feed
-            # course eligibility. Lecturers are not, at registration time.
-            department = validate_department(
-                attrs.get("department"), required=is_student
-            )
-            attrs["_department"] = department
-            attrs["level"] = validate_level(attrs.get("level"), required=is_student)
-
             if is_student and not str(attrs.get("matricule") or "").strip():
-                raise serializers.ValidationError(
-                    {"matricule": "Matricule number is required for students."}
-                )
-            if not is_student and not str(attrs.get("staffid") or "").strip():
-                raise serializers.ValidationError(
-                    {"staffid": "Staff number is required for lecturers."}
-                )
-
-            validate_identity_free(
-                matricule=attrs.get("matricule"),
-                staffid=attrs.get("staffid"),
-            )
+                raise serializers.ValidationError({"matricule": "Matricule number is required for students."})
+            if not is_student and attrs.get("matricule"):
+                raise serializers.ValidationError({"matricule": "This field is for student registration."})
+            validate_identity_free(matricule=attrs.get("matricule"), staffid=None)
         except EligibilityError as exc:
-            # Eligibility rejections are validation outcomes, not server
-            # faults: letting the domain error escape here would surface as a
-            # 500 and leak the exception envelope shape.
             raise serializers.ValidationError({"account_type": str(exc)}) from exc
-
-        # A forged role in the payload must not survive into the service call.
-        attrs.pop("role", None)
         return attrs
 
 
@@ -216,6 +190,11 @@ class UserSerializer(serializers.ModelSerializer):
             "level",
             "is_email_verified",
             "must_change_password",
+            # Authorises acting as teaching staff. Server-owned: an applicant
+            # decides only via POST /accounts/lecturers/<id>/approval/ by an
+            # administrator. Writable here it would let a PENDING lecturer
+            # PATCH their own /accounts/me/ into APPROVED.
+            "lecturer_approval_status",
             "created_at",
         ]
 
