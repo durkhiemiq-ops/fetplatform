@@ -11,17 +11,18 @@ from rest_framework.test import APIClient
 
 from apps.academic.models import ClassSession, Course, Enrollment
 from apps.accounts.models import User
-from apps.attendance.models import AttendanceRecord, AttendanceSession
+from apps.attendance.models import AttendanceCheckpoint, AttendanceRecord, AttendanceSession
 from apps.attendance.services.attendance_service import (
     AlreadyMarkedError,
+    NotEligibleError,
+    SelfScanRejectedError,
     SessionExpiredError,
-    TokenStudentMismatchError,
     generate_checkpoint_token,
+    generate_projected_token,
     scan_attendance,
     select_checkpoints,
 )
 from apps.attendance.utils.qr_tokens import (
-    TokenAlreadyUsedError,
     TokenExpiredError,
     generate_token,
 )
@@ -47,21 +48,34 @@ class AttendanceSecurityTests(TestCase):
         self.other_student = User.objects.create_user(
             "other@example.test", "other", "Other", "Student", "StrongPass!2026"
         )
+        self.third_student = User.objects.create_user(
+            "third@example.test", "third", "Thi", "Rd", "StrongPass!2026"
+        )
         self.course = Course.objects.create(code="FET101", name="Secure Attendance")
         Enrollment.objects.create(student=self.student, course=self.course)
         Enrollment.objects.create(student=self.other_student, course=self.course)
+        Enrollment.objects.create(student=self.third_student, course=self.course)
         self.class_session = ClassSession.objects.create(
             course=self.course, lecturer=self.lecturer, starts_at=timezone.now()
         )
+        # Stations mode: every test below seeds a scan point, and a scan point
+        # only exists when the session honours the station contract.
         self.session = AttendanceSession.objects.create(
             class_session=self.class_session,
             lecturer=self.lecturer,
             expires_at=timezone.now() + timedelta(seconds=60),
+            mode=AttendanceSession.Mode.STATIONS,
         )
 
     def checkpoint_token(self, student=None):
+        """Issue the shared code of a station owned by ``student``.
+
+        The default owner is ``other_student`` so the scanner under test
+        (``self.student``) is never the station owner — a station owner may
+        not relay their own code.
+        """
         checkpoint = select_checkpoints(
-            lecturer=self.lecturer, session=self.session, student_ids=[(student or self.student).id]
+            lecturer=self.lecturer, session=self.session, student_ids=[(student or self.other_student).id]
         )[0]
         return generate_checkpoint_token(lecturer=self.lecturer, checkpoint=checkpoint), checkpoint
 
@@ -70,22 +84,67 @@ class AttendanceSecurityTests(TestCase):
         record = scan_attendance(authenticated_student=self.student, token=token)
         self.assertEqual(record.student_id, self.student.id)
         self.assertEqual(record.checkpoint_id, checkpoint.id)
+        # The station owner relayed the scan; relaying is not presence.
+        self.assertFalse(AttendanceRecord.objects.filter(student=self.other_student).exists())
+        # Cascade: proving presence by scanning a station activates the scanner
+        # as a station too, session-scoped and server-issued.
+        self.assertTrue(
+            AttendanceCheckpoint.objects.filter(
+                attendance_session=self.session,
+                student=self.student,
+                source=AttendanceCheckpoint.Source.CASCADE,
+            ).exists()
+        )
 
-    def test_same_token_cannot_be_replayed(self):
+    def test_shared_code_marks_each_eligible_scanner_exactly_once(self):
+        """BR-039 shared-QR contract: one code, many scanners, zero duplicates."""
         token, _ = self.checkpoint_token()
         scan_attendance(authenticated_student=self.student, token=token)
-        with self.assertRaises(TokenAlreadyUsedError):
+        # The same code keeps working for the next student inside its TTL...
+        scan_attendance(authenticated_student=self.third_student, token=token)
+        self.assertEqual(
+            AttendanceRecord.objects.filter(attendance_session=self.session).count(), 2
+        )
+        # ...but never a second credit for a student already marked.
+        with self.assertRaises(AlreadyMarkedError):
             scan_attendance(authenticated_student=self.student, token=token)
+        self.assertEqual(
+            AttendanceRecord.objects.filter(student=self.student).count(), 1
+        )
 
-    def test_screenshot_token_cannot_credit_another_student(self):
-        token, _ = self.checkpoint_token(student=self.student)
-        with self.assertRaises(TokenStudentMismatchError):
+    def test_code_carries_no_identity_only_the_authenticated_scanner_is_credited(self):
+        """A forwarded/screenshot code cannot mark anybody but its holder."""
+        token, _ = self.checkpoint_token(student=self.other_student)
+        record = scan_attendance(authenticated_student=self.student, token=token)
+        self.assertEqual(record.student_id, self.student.id)
+        # Neither the station owner nor any other account picked up a credit.
+        self.assertEqual(
+            set(AttendanceRecord.objects.values_list("student_id", flat=True)),
+            {self.student.id},
+        )
+
+    def test_station_owner_cannot_mark_themselves_with_their_own_code(self):
+        token, _ = self.checkpoint_token(student=self.other_student)
+        with self.assertRaises(SelfScanRejectedError):
             scan_attendance(authenticated_student=self.other_student, token=token)
         self.assertFalse(AttendanceRecord.objects.filter(student=self.other_student).exists())
 
+    def test_unenrolled_scanner_is_refused_by_the_shared_code(self):
+        outsider = User.objects.create_user(
+            "scan-outsider@example.test", "scanoutsider", "Out", "Sider", "StrongPass!2026"
+        )
+        token, _ = self.checkpoint_token()
+        with self.assertRaises(NotEligibleError):
+            scan_attendance(authenticated_student=outsider, token=token)
+        self.assertFalse(AttendanceRecord.objects.filter(student=outsider).exists())
+
     def test_cross_session_token_is_rejected(self):
         token, checkpoint = self.checkpoint_token()
-        token = generate_token(checkpoint_id=checkpoint.id, session_id="different-session")
+        # A well-formed but foreign session binding: the token proves nothing
+        # about a session this scan point does not belong to.
+        token = generate_token(
+            checkpoint_id=checkpoint.id, session_id="33333333-3333-3333-3333-333333333333"
+        )
         with self.assertRaises(SessionExpiredError):
             scan_attendance(authenticated_student=self.student, token=token)
 
@@ -231,6 +290,7 @@ class AttendanceConcurrencyTests(TransactionTestCase):
             class_session=self.class_session,
             lecturer=self.lecturer,
             expires_at=timezone.now() + timedelta(seconds=600),
+            mode=AttendanceSession.Mode.PROJECTOR,
         )
 
     def make_students(self, count):
@@ -281,20 +341,13 @@ class AttendanceConcurrencyTests(TransactionTestCase):
         return results, errors
 
     def test_100_distinct_students_burst_with_no_loss_or_duplicates(self):
-        # BR-029's headline number: 100+ students in the same few seconds.
+        # BR-029's headline number: 100+ students in the same few seconds,
+        # all scanning the one projected code — the shared-QR contract.
         students = self.make_students(100)
-        checkpoints = select_checkpoints(
-            lecturer=self.lecturer,
-            session=self.session,
-            student_ids=[student.id for student in students],
-        )
-        tokens = [
-            generate_checkpoint_token(lecturer=self.lecturer, checkpoint=checkpoint)
-            for checkpoint in checkpoints
-        ]
+        token = generate_projected_token(lecturer=self.lecturer, session=self.session)
         arguments = [
             {"authenticated_student": student, "token": token}
-            for student, token in zip(students, tokens)
+            for student in students
         ]
         results, errors = self.run_burst(arguments, scan_attendance, 100)
 
@@ -306,13 +359,44 @@ class AttendanceConcurrencyTests(TransactionTestCase):
         self.assertEqual(
             records.values_list("student_id", flat=True).distinct().count(), 100
         )
+        # A projected scan has no scan point by definition.
+        self.assertEqual(
+            records.exclude(checkpoint__isnull=True).count(), 0
+        )
+
+    def test_100_students_bursting_on_one_station_code_share_the_load(self):
+        """Stations mode: one station's code, the whole class behind it."""
+        students = self.make_students(100)
+        device_owner = User.objects.create_user(
+            "conc-device@example.test", "concdevice", "Conc", "Device", "StrongPass!2026"
+        )
+        Enrollment.objects.create(student=device_owner, course=self.course)
+        station_session = AttendanceSession.objects.create(
+            class_session=self.class_session,
+            lecturer=self.lecturer,
+            expires_at=timezone.now() + timedelta(seconds=600),
+            mode=AttendanceSession.Mode.STATIONS,
+        )
+        checkpoint = select_checkpoints(
+            lecturer=self.lecturer, session=station_session, student_ids=[device_owner.id]
+        )[0]
+        token = generate_checkpoint_token(lecturer=self.lecturer, checkpoint=checkpoint)
+        arguments = [
+            {"authenticated_student": student, "token": token}
+            for student in students
+        ]
+        results, errors = self.run_burst(arguments, scan_attendance, 100)
+
+        self.assertEqual(errors, [], f"valid submissions must not be lost: {errors}")
+        self.assertEqual(len(results), 100)
+        records = AttendanceRecord.objects.filter(attendance_session=station_session)
+        self.assertEqual(records.count(), 100)
+        # The relay owner is never credited by producing the code.
+        self.assertFalse(records.filter(student=device_owner).exists())
 
     def test_same_student_simultaneous_replay_is_recorded_exactly_once(self):
         student = self.make_students(1)[0]
-        checkpoint = select_checkpoints(
-            lecturer=self.lecturer, session=self.session, student_ids=[student.id]
-        )[0]
-        token = generate_checkpoint_token(lecturer=self.lecturer, checkpoint=checkpoint)
+        token = generate_projected_token(lecturer=self.lecturer, session=self.session)
         results, errors = self.run_burst(
             [
                 {"authenticated_student": student, "token": token},
@@ -329,14 +413,11 @@ class AttendanceConcurrencyTests(TransactionTestCase):
         )
         self.assertEqual(len(results), 1)
         self.assertEqual(len(errors), 1)
-        self.assertIsInstance(errors[0], (TokenAlreadyUsedError, AlreadyMarkedError))
+        self.assertIsInstance(errors[0], AlreadyMarkedError)
 
     def test_expired_token_is_rejected_by_every_concurrent_scanner(self):
         student = self.make_students(1)[0]
-        checkpoint = select_checkpoints(
-            lecturer=self.lecturer, session=self.session, student_ids=[student.id]
-        )[0]
-        token = generate_checkpoint_token(lecturer=self.lecturer, checkpoint=checkpoint)
+        token = generate_projected_token(lecturer=self.lecturer, session=self.session)
         # Simulate the 10s TTL elapsing: the cache entry is gone, exactly as it
         # would be after the window.  No record may be written from this point.
         cache.delete(f"attendance:qr:{token}")
@@ -360,14 +441,10 @@ class AttendanceConcurrencyTests(TransactionTestCase):
 
     def test_expired_session_rejects_concurrent_scans_without_side_effects(self):
         student = self.make_students(1)[0]
-        checkpoint = select_checkpoints(
-            lecturer=self.lecturer, session=self.session, student_ids=[student.id]
-        )[0]
         # Each worker gets its own fresh token so every scan reaches the
-        # session-expiry check (token consumption happens first, so sharing a
-        # token would make the second worker fail on replay instead).
+        # session-expiry check instead of sharing one code's fate.
         tokens = [
-            generate_checkpoint_token(lecturer=self.lecturer, checkpoint=checkpoint)
+            generate_projected_token(lecturer=self.lecturer, session=self.session)
             for _ in range(2)
         ]
         # The session window lapses AFTER tokens were issued — a realistic race

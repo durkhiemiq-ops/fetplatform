@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Announcement
+from .models import Announcement, BODY_MAX_LENGTH
 from .services.announcement_service import announcement_audience, can_manage_announcement
 
 
@@ -94,7 +94,7 @@ class AnnouncementCreateSerializer(serializers.Serializer):
     """Create payload; the service performs the authorization decision (BR-083)."""
 
     title = serializers.CharField(max_length=255)
-    body = serializers.CharField()
+    body = serializers.CharField(max_length=BODY_MAX_LENGTH)
     scope = serializers.ChoiceField(
         choices=[c.value for c in Announcement.Scope if c.value != "course_class"]
     )
@@ -115,9 +115,19 @@ class AnnouncementUpdateSerializer(serializers.Serializer):
     """Partial edit payload for update_announcement (BR-084 audits publishes)."""
 
     title = serializers.CharField(max_length=255, required=False)
-    body = serializers.CharField(required=False)
+    body = serializers.CharField(required=False, max_length=BODY_MAX_LENGTH)
     is_important = serializers.BooleanField(required=False)
     published = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        unexpected = set(self.initial_data) - set(self.fields)
+        if unexpected:
+            raise serializers.ValidationError(
+                {field: "This field is not permitted." for field in unexpected}
+            )
+        if not attrs:
+            raise serializers.ValidationError("At least one field is required.")
+        return attrs
 
     def validate_title(self, value):
         if not value.strip():

@@ -1,11 +1,28 @@
-"""Server-owned course-offering discovery and self-registration rules."""
+"""Server-owned course-offering discovery and self-registration rules.
+
+The enrollment scope here is NOT whatever the student typed at signup.
+Public registration collects a department and level as intake declarations,
+but those values are client-supplied, so treating them as academic truth would
+let any student post ``level=400`` and inherit 400-level course access (MVP
+mandate s10/s12). The single authority is the administrator-owned
+``StudentAcademicProfile``; a student without one gets an honest
+INCOMPLETE_PROFILE state for authorized setup rather than an invented level.
+"""
+
+from typing import NamedTuple
 
 from django.db import transaction
 from django.utils import timezone
 
 from core.audit import write_audit_entry
 
-from ..models import CourseOffering, Enrollment, Semester
+from ..models import (  # noqa: F401 - re-exported for callers that only need models
+    CourseOffering,
+    Department,
+    Enrollment,
+    Semester,
+    StudentAcademicProfile,
+)
 
 
 class RegistrationError(ValueError):
@@ -34,29 +51,60 @@ class OfferingUnavailableError(RegistrationError):
     code = "OFFERING_UNAVAILABLE"
 
 
+class AcademicScope(NamedTuple):
+    """The official enrollment scope resolved from administrator-owned data."""
+
+    profile: StudentAcademicProfile
+    department: Department
+    level: str
+
+
+def academic_scope(student) -> AcademicScope:
+    """Resolve a student's official department and level, or refuse honestly.
+
+    Only ``StudentAcademicProfile`` counts: it is written by an administrator
+    through the curriculum configuration API, never by a public client.
+    """
+    profile = (
+        StudentAcademicProfile.objects.select_related(
+            "programme", "programme__department", "programme_level"
+        )
+        .filter(student=student)
+        .first()
+    )
+    if profile is None:
+        raise IncompleteProfileError(
+            "Your academic programme and level must be assigned by an administrator."
+        )
+    department = profile.programme.department
+    level = str(profile.programme_level.code or "").strip()
+    if department is None or not level:
+        raise IncompleteProfileError(
+            "Your academic programme and level must be assigned by an administrator."
+        )
+    return AcademicScope(profile=profile, department=department, level=level)
+
+
 def _registration_context(student):
     if getattr(student, "role", None) != "STUDENT":
         raise StudentOnlyError("Only students can register for courses.")
-    if not student.department_id or not str(getattr(student, "level", "")).strip():
-        raise IncompleteProfileError(
-            "Your institution-assigned department or level is missing. Contact an administrator."
-        )
+    scope = academic_scope(student)
     semester = Semester.objects.filter(is_current=True).first()
     if semester is None:
         raise NoActiveSemesterError("No active semester is available for registration.")
     today = timezone.localdate()
     if semester.registration_deadline and today > semester.registration_deadline:
         raise RegistrationClosedError("Course registration has closed for this semester.")
-    return semester, today
+    return semester, today, scope
 
 
 def eligible_offerings(student):
-    semester, today = _registration_context(student)
+    semester, today, scope = _registration_context(student)
     queryset = CourseOffering.objects.filter(
         semester=semester,
-        department_id=student.department_id,
-        course__department_id=student.department_id,
-        course__level=student.level,
+        department_id=scope.department.pk,
+        course__department_id=scope.department.pk,
+        course__level=scope.level,
         course__status="ACTIVE",
         status="ACTIVE",
     ).select_related("course", "department", "semester", "lecturer")
@@ -64,12 +112,12 @@ def eligible_offerings(student):
         offering for offering in queryset
         if offering.registration_deadline is None or today <= offering.registration_deadline
     ]
-    return semester, rows
+    return semester, rows, scope
 
 
 @transaction.atomic
 def register_student(*, student, offering_ids):
-    semester, available = eligible_offerings(student)
+    semester, available, _scope = eligible_offerings(student)
     available_by_id = {offering.id: offering for offering in available}
     requested = list(offering_ids)
     if any(offering_id not in available_by_id for offering_id in requested):

@@ -35,15 +35,13 @@ from typing import Any, Optional, Protocol
 
 from core.common import ConfigurationError, get_attr
 from core.academic_access import (
-    ROLE_ACADEMIC_STAFF,
-    ROLE_LECTURER,
-    ROLE_STAFF,
     is_admin_user,
-    normalize_role,
+    is_authorized_academic_user,
 )
 from .enrollment_service import (
     get_enrolled_students,
     is_student_enrolled_in_course,
+    is_student_enrolled_in_offering,
 )
 
 
@@ -64,6 +62,7 @@ class ClassLike(Protocol):
 
     id: Any
     course_id: Any
+    course_offering_id: Any
 
 
 class AttendanceSessionLike(Protocol):
@@ -100,14 +99,14 @@ def _resolve_class_record(
     return queryset[0] if queryset else None
 
 
-def _resolve_course_id(
+def _resolve_course_context(
     *,
     session: Optional[AttendanceSessionLike] = None,
     class_id: Optional[Any] = None,
     ClassModel: Optional[type[ClassLike]] = None,
     course_id: Optional[Any] = None,
-) -> Any:
-    """Determine the course on which eligibility depends.
+) -> tuple[Any, Any]:
+    """Determine the course and optional offering on which eligibility depends.
 
     The course can be discovered from an active attendance session, from the
     class record, or supplied directly by the caller.
@@ -125,6 +124,9 @@ def _resolve_course_id(
         if class_record is None:
             raise ClassNotFoundError(f"Class {requested_class_id} was not found")
         class_course = get_attr(class_record, "course_id", "course")
+        class_offering = get_attr(
+            class_record, "course_offering_id", "course_offering"
+        )
         if class_course is None:
             raise CourseNotResolvedError(
                 f"Class {requested_class_id} is not attached to a course"
@@ -137,7 +139,7 @@ def _resolve_course_id(
             raise CourseNotResolvedError(
                 "Requested class does not belong to the requested course"
             )
-        return class_course
+        return class_course, class_offering
 
     if course_id is not None:
         if CourseModel is not None and hasattr(CourseModel, "objects"):
@@ -147,14 +149,19 @@ def _resolve_course_id(
                 raise CourseNotResolvedError(
                     f"Course {course_id} was not found"
                 )
-        return course_id
+        return course_id, None
 
     if session_course is not None:
-        return session_course
+        return session_course, None
 
     raise CourseNotResolvedError(
         "Could not determine the course behind the requested class/session"
     )
+
+
+def _resolve_course_id(**kwargs) -> Any:
+    """Backward-compatible course-only resolver for legacy internal callers."""
+    return _resolve_course_context(**kwargs)[0]
 
 
 def can_lecturer_manage_class(
@@ -165,15 +172,31 @@ def can_lecturer_manage_class(
     assigned_class_ids: Optional[Any] = None,
     assigned_course_ids: Optional[Any] = None,
 ) -> bool:
-    """Return whether a lecturer has server-side assignment for a class/course."""
-    # BR-021, BR-072: lecturers may manage only assigned academic scopes;
-    # administrators may use broader authorization from their stored role.
+    """Return whether a lecturer may manage this class/course.
+
+    BR-021, BR-072: lecturers may manage only assigned academic scopes;
+    administrators may use broader authorization from their stored role.
+
+    Lecturer approval
+    -----------------
+    This delegates the role gate to
+    :func:`core.academic_access.is_authorized_academic_user` rather than
+    re-deriving it from the role string. It previously accepted any account
+    whose role was LECTURER/ACADEMIC_STAFF/STAFF, so a PENDING or REJECTED
+    applicant who had been assigned a class would have been authorized here
+    even though every lecturer-only endpoint refused them. Having no callers
+    made that latent rather than live; the inconsistency was the debt.
+
+    The delegation keeps the duck-typed callers working: the predicate reads
+    ``lecturer_approval_status`` with a ``None`` default, and ``None`` still
+    means "not an applicant", so an object without that attribute behaves as a
+    legacy lecturer exactly as before.
+    """
     if lecturer is None:
         return False
-    role = normalize_role(get_attr(lecturer, "role", "account_role"))
     if is_admin_user(lecturer) or bool(get_attr(lecturer, "is_administrator")):
         return True
-    if role not in {ROLE_LECTURER, ROLE_ACADEMIC_STAFF, ROLE_STAFF}:
+    if not is_authorized_academic_user(lecturer):
         return False
 
     classes = set(assigned_class_ids or get_attr(lecturer, "class_ids") or [])
@@ -191,11 +214,16 @@ def _check_enrollment(
     *,
     EnrollmentModel: Optional[type[EnrollmentModelLike]],
     enrollment_checker: Optional[Any],
+    course_offering_id: Optional[Any] = None,
 ) -> bool:
     if enrollment_checker is not None:
         try:
             return bool(
-                enrollment_checker(student_id=student_id, course_id=course_id)
+                enrollment_checker(
+                    student_id=student_id,
+                    course_id=course_id,
+                    course_offering_id=course_offering_id,
+                )
             )
         except TypeError:
             return bool(enrollment_checker(student_id, course_id))
@@ -203,7 +231,14 @@ def _check_enrollment(
     if EnrollmentModel is None:
         raise ConfigurationError("EnrollmentModel or enrollment_checker is required")
 
-    # BR-011, BR-070: eligibility is derived from an active course enrollment.
+    if course_offering_id is not None:
+        return is_student_enrolled_in_offering(
+            student_id,
+            course_offering_id,
+            EnrollmentModel=EnrollmentModel,
+        )
+
+    # Legacy class sessions without an offering retain course-level eligibility.
     return is_student_enrolled_in_course(
         student_id,
         course_id,
@@ -235,7 +270,7 @@ def is_student_eligible_for_class(
 
     # BR-011, BR-070: course enrollment is the only default trigger for class
     # eligibility; the course behind the class has to be resolved first.
-    resolved_course = _resolve_course_id(
+    resolved_course, resolved_offering = _resolve_course_context(
         session=session,
         class_id=class_id,
         ClassModel=ClassModel,
@@ -250,6 +285,7 @@ def is_student_eligible_for_class(
         resolved_course,
         EnrollmentModel=EnrollmentModel,
         enrollment_checker=enrollment_checker,
+        course_offering_id=resolved_offering,
     )
 
 
@@ -271,7 +307,7 @@ def get_eligible_students(
     if EnrollmentModel is None:
         raise ConfigurationError("EnrollmentModel is required")
 
-    resolved_course = _resolve_course_id(
+    resolved_course, resolved_offering = _resolve_course_context(
         session=session,
         class_id=class_id,
         ClassModel=ClassModel,
@@ -284,4 +320,5 @@ def get_eligible_students(
         resolved_course,
         EnrollmentModel=EnrollmentModel,
         active_only=True,
+        course_offering_id=resolved_offering,
     )

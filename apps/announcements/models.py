@@ -8,6 +8,11 @@ import uuid
 
 from django.db import models
 
+#: Upper bound on an announcement body, in characters. Declared here once and
+#: imported by the serializers, so the model and the API cannot drift into
+#: disagreeing about what is acceptable.
+BODY_MAX_LENGTH = 10000
+
 
 class Announcement(models.Model):
     class Scope(models.TextChoices):
@@ -19,7 +24,11 @@ class Announcement(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
-    body = models.TextField()
+    # Bounded rather than free TEXT: the content model here is plain text plus
+    # output encoding (see the XSS gate in scripts/security_audit_checks.py),
+    # and an unbounded body is a storage-amplification vector on an endpoint
+    # any member of the scope can post to.
+    body = models.TextField(max_length=BODY_MAX_LENGTH)
     scope = models.CharField(max_length=32, choices=Scope.choices)
     faculty = models.ForeignKey(
         "academic.Faculty", on_delete=models.PROTECT, null=True, blank=True, related_name="+"

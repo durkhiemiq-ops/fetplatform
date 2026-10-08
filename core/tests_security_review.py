@@ -52,6 +52,14 @@ class SecurityBoundaryReviewTests(TestCase):
         cache.clear()
         self.client = APIClient()
 
+    def tearDown(self):
+        # settings_test pins LocMemCache, which is process-wide and so not reset
+        # between test classes. These tests register accounts anonymously, and
+        # the "register" throttle is only 5/minute; clearing on the way out stops
+        # those counters leaking into the next module and surfacing there as
+        # spurious 429s.
+        cache.clear()
+
     def test_public_registration_never_creates_a_privileged_account(self):
         """Public registration exists again, but it must never mint privilege.
 

@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "apps.assessments",
     "apps.projects",
     "apps.notifications",
+    "apps.files",
 ]
 
 MIDDLEWARE = [
@@ -158,6 +159,8 @@ REST_FRAMEWORK = {
         # not part of the sensitive surface, but a shared per-user budget keeps
         # bulk read-all spam bounded.  ScopedRateThrottle keys on user.pk.
         "notifications": "120/minute",
+        # Private uploads are storage-expensive even when validation rejects them.
+        "file-upload": "30/hour",
     },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
@@ -203,8 +206,11 @@ CSRF_FAILURE_VIEW = "core.csrf.csrf_failure"
 QR_TOKEN_TTL_SECONDS = int(os.environ.get("QR_TOKEN_TTL_SECONDS", "10"))
 ATTENDANCE_SESSION_TTL_SECONDS = int(os.environ.get("ATTENDANCE_SESSION_TTL_SECONDS", "60"))
 
-# File upload limits (BR-183)
+# File upload limits and private storage (BR-180..BR-183)
 MAX_FILE_SIZE_BYTES = int(os.environ.get("MAX_FILE_SIZE_BYTES", "26214400"))  # 25 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("FILE_UPLOAD_MAX_MEMORY_SIZE", "2621440"))
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DATA_UPLOAD_MAX_MEMORY_SIZE", "1048576"))
+MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "media"))
 
 # ===== Email delivery (OTP verification) =====
 # Console backend is the safe development default: codes print to the
@@ -247,3 +253,35 @@ CSRF_TRUSTED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+
+# Production-safe process logging. Deployment infrastructure owns retention
+# and rotation; Django emits timestamped, attributable records to stdout for
+# collection without writing credentials or environment contents to disk.
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {
+            "format": "{levelname} {asctime} {name} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+    "loggers": {
+        "django.security": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
+}

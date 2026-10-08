@@ -7,6 +7,7 @@ service calls and domain errors to the standard error envelope.
 """
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.paginator import Paginator
 from django.db.models import Q
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -59,6 +60,7 @@ from .services.project_service import (
     archive_project,
     create_milestone,
     create_project,
+    create_project_group,
     create_task,
     delete_milestone,
     record_contribution,
@@ -87,6 +89,8 @@ def _can_manage(user, project) -> bool:
         return False
     if is_admin_user(user):
         return True
+    if not is_authorized_academic_user(user):
+        return False
     return user.id in {project.owner_id, project.supervisor_id, project.created_by_id}
 
 
@@ -96,6 +100,11 @@ def _visible_projects(user):
     queryset = Project.objects.all().select_related("owner", "supervisor", "created_by")
     if is_admin_user(user):
         return queryset
+    if (
+        getattr(user, "role", None) == User.Role.LECTURER
+        and not is_authorized_academic_user(user)
+    ):
+        return queryset.none()
     return queryset.filter(
         Q(owner=user)
         | Q(supervisor=user)
@@ -223,6 +232,12 @@ class ProjectDetailView(APIView):
         project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
+        if not _can_manage(request.user, project):
+            return _error(
+                "UNAUTHORIZED",
+                "Only an authorized project owner or supervisor may change project status.",
+                403,
+            )
         serializer = ProjectStatusSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         new_status = serializer.validated_data["status"]
@@ -253,19 +268,22 @@ class ProjectGroupCreateView(APIView):
         project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
-        if not _can_manage(request.user, project):
-            return _error(
-                "UNAUTHORIZED",
-                "Only the project owner or supervisor may manage groups.",
-                403,
-            )
         serializer = GroupCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        group = ProjectGroup.objects.create(
-            project=project,
-            name=serializer.validated_data["name"],
-            created_by=request.user,
-        )
+        try:
+            group = create_project_group(
+                GroupModel=ProjectGroup,
+                project=project,
+                name=serializer.validated_data["name"],
+                actor_id=request.user.id,
+                actor_authorizer=lambda actor_id, project: _can_manage(
+                    request.user, project
+                ),
+            )
+        except UnauthorizedProjectActionError as exc:
+            return _error("UNAUTHORIZED", str(exc), 403)
+        except ProjectError as exc:
+            return _error("INVALID_INPUT", str(exc), 400)
         return _success(ProjectGroupSerializer(group).data, 201)
 
 
@@ -357,16 +375,40 @@ class ProjectCandidatesView(APIView):
         candidates = User.objects.filter(role=User.Role.STUDENT).exclude(
             pk__in=assigned_ids
         ).order_by("first_name", "last_name", "username")
-        return _success(
-            [
-                {
-                    "id": student.id,
-                    "first_name": student.first_name,
-                    "last_name": student.last_name,
-                    "username": student.username,
-                }
-                for student in candidates
-            ]
+        search = request.query_params.get("search", "").strip()[:100]
+        if search:
+            candidates = candidates.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(username__icontains=search)
+            )
+        try:
+            page_size = int(request.query_params.get("page_size", 50))
+        except (TypeError, ValueError):
+            page_size = 50
+        page_size = min(max(page_size, 1), 100)
+        page = Paginator(candidates, page_size).get_page(
+            request.query_params.get("page", 1)
+        )
+        return Response(
+            {
+                "success": True,
+                "data": [
+                    {
+                        "id": student.id,
+                        "first_name": student.first_name,
+                        "last_name": student.last_name,
+                        "username": student.username,
+                    }
+                    for student in page.object_list
+                ],
+                "pagination": {
+                    "page": page.number,
+                    "page_size": page.paginator.per_page,
+                    "total": page.paginator.count,
+                    "total_pages": page.paginator.num_pages,
+                },
+            }
         )
 
 
@@ -377,6 +419,12 @@ class ProjectTaskCreateView(APIView):
         project = _visible_projects(request.user).filter(pk=pk).first()
         if project is None:
             return _error("NOT_FOUND", "Project not found.", 404)
+        if not _can_manage(request.user, project):
+            return _error(
+                "UNAUTHORIZED",
+                "Only an authorized project owner or supervisor may create tasks.",
+                403,
+            )
         serializer = TaskCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data

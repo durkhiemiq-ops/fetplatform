@@ -7,7 +7,18 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from core.models import AuditEvent
 
-from .models import Course, CourseOffering, Department, Enrollment, Faculty, SchoolYear, Semester
+from .models import (
+    Course,
+    CourseOffering,
+    Department,
+    Enrollment,
+    Faculty,
+    Programme,
+    ProgrammeLevel,
+    SchoolYear,
+    Semester,
+    StudentAcademicProfile,
+)
 
 
 class StudentRegistrationApiTests(TestCase):
@@ -32,6 +43,19 @@ class StudentRegistrationApiTests(TestCase):
         self.student = User.objects.create_user(
             "registration@example.test", "registration", "Reg", "Student",
             "StrongPass!2026", department=self.department, level="400",
+        )
+        # Enrollment scope is administrator-owned (MVP mandate s10): the
+        # department/level on the User row above is an intake declaration and
+        # is deliberately NOT what gates course access -- the profile is.
+        self.programme = Programme.objects.create(
+            department=self.department, code="CE-BSC", name="Computer Engineering"
+        )
+        self.level_400 = ProgrammeLevel.objects.create(
+            programme=self.programme, code="400", name="Level 400"
+        )
+        self.profile = StudentAcademicProfile.objects.create(
+            student=self.student, programme=self.programme,
+            programme_level=self.level_400, cohort=2023,
         )
         self.lecturer = User.objects.create_user(
             "registration-lecturer@example.test", "registration-lecturer", "Lect", "Urer",
@@ -104,6 +128,57 @@ class StudentRegistrationApiTests(TestCase):
             "/api/v1/students/me/register/", {"offering_ids": [str(other.id)]}, format="json"
         )
         self.assertEqual(response.status_code, 400)
+
+    # ---- client-declared level must never become enrollment authority ----
+
+    def test_student_without_an_admin_profile_cannot_self_enroll(self):
+        """MASTER-ACAD-01: the level posted at signup grants no course access.
+
+        ``User.level`` is written by the public registration form, so it is
+        client-controlled. Before this fix the legacy endpoint filtered courses
+        on it directly, letting any applicant post ``level=400`` and obtain
+        attendance/material eligibility for a cohort they never joined.
+        """
+        undeclared = User.objects.create_user(
+            "undeclared@example.test", "undeclared", "Un", "Declared",
+            "StrongPass!2026", department=self.department, level="400",
+        )
+        self.client.force_authenticate(undeclared)
+        listing = self.client.get("/api/v1/students/me/available-courses/")
+        registration = self.client.post(
+            "/api/v1/students/me/register/", {"offering_ids": [str(self.offering.id)]},
+            format="json",
+        )
+        self.assertEqual(listing.status_code, 400)
+        self.assertEqual(listing.data["error"]["code"], "INCOMPLETE_PROFILE")
+        self.assertEqual(registration.status_code, 400)
+        self.assertEqual(registration.data["error"]["code"], "INCOMPLETE_PROFILE")
+        self.assertFalse(Enrollment.objects.filter(student=undeclared).exists())
+
+    def test_scope_follows_the_admin_profile_not_the_posted_level(self):
+        """A posted level is ignored even when the profile says otherwise."""
+        overreach = User.objects.create_user(
+            "overreach@example.test", "overreach", "Ov", "Reach",
+            "StrongPass!2026", department=self.department, level="400",
+        )
+        level_100 = ProgrammeLevel.objects.create(
+            programme=self.programme, code="100", name="Level 100"
+        )
+        StudentAcademicProfile.objects.create(
+            student=overreach, programme=self.programme,
+            programme_level=level_100, cohort=2026,
+        )
+        self.client.force_authenticate(overreach)
+        listing = self.client.get("/api/v1/students/me/available-courses/")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.data["data"]["level"], "100")
+        self.assertEqual(listing.data["data"]["courses"], [])
+        registration = self.client.post(
+            "/api/v1/students/me/register/", {"offering_ids": [str(self.offering.id)]},
+            format="json",
+        )
+        self.assertEqual(registration.status_code, 400)
+        self.assertFalse(Enrollment.objects.filter(student=overreach).exists())
 
     def test_expired_registration_deadline_blocks_reads_and_writes(self):
         self.semester.registration_deadline = timezone.localdate() - timedelta(days=1)
@@ -179,8 +254,11 @@ class StudentRegistrationApiTests(TestCase):
         )
 
     def test_incomplete_profile_and_non_student_are_rejected(self):
-        self.student.level = ""
-        self.student.save(update_fields=["level"])
+        # The incomplete state is "no administrator-assigned profile". It used
+        # to be triggered by clearing ``User.level``, but that field is
+        # client-writable at signup and is no longer the enrollment gate
+        # (MVP mandate s10), so clearing it proves nothing about access.
+        self.profile.delete()
         self.client.force_authenticate(self.student)
         incomplete = self.client.get("/api/v1/students/me/available-courses/")
         self.assertEqual(incomplete.data["error"]["code"], "INCOMPLETE_PROFILE")

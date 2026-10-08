@@ -60,7 +60,7 @@ class AssessmentApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["error"]["code"], "UNAUTHORIZED")
+        self.assertEqual(response.data["error"]["code"], "FORBIDDEN")
 
     def test_lecturer_creates_audited_assessment(self):
         self.client.force_authenticate(user=self.lecturer)
@@ -142,8 +142,8 @@ class AssessmentApiTests(TestCase):
             {"released": True},
             format="json",
         )
-        self.assertEqual(denied.status_code, 404)
-        self.assertEqual(denied.data["error"]["code"], "NOT_FOUND")
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.data["error"]["code"], "FORBIDDEN")
 
         self.client.force_authenticate(user=self.lecturer)
         before = AuditEvent.objects.filter(
@@ -161,6 +161,43 @@ class AssessmentApiTests(TestCase):
         ).count()
         self.assertGreater(after, before)
 
+    def test_lecturer_approval_controls_assessment_mutations(self):
+        assessment = Assessment.objects.create(
+            student=self.student,
+            course=self.course,
+            released=False,
+        )
+        self.lecturer.lecturer_approval_status = User.LecturerApproval.PENDING
+        self.lecturer.save(update_fields=["lecturer_approval_status", "updated_at"])
+        self.client.force_authenticate(user=self.lecturer)
+
+        pending = self.client.patch(
+            reverse("assessments:detail", args=[assessment.pk]),
+            {"released": True},
+            format="json",
+        )
+        self.assertEqual(pending.status_code, 403)
+
+        self.lecturer.lecturer_approval_status = User.LecturerApproval.APPROVED
+        self.lecturer.save(update_fields=["lecturer_approval_status", "updated_at"])
+        approved = self.client.patch(
+            reverse("assessments:detail", args=[assessment.pk]),
+            {"released": True},
+            format="json",
+        )
+        self.assertEqual(approved.status_code, 200, approved.data)
+
+        self.lecturer.lecturer_approval_status = User.LecturerApproval.REJECTED
+        self.lecturer.save(update_fields=["lecturer_approval_status", "updated_at"])
+        rejected = self.client.patch(
+            reverse("assessments:detail", args=[assessment.pk]),
+            {"released": False},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, 403)
+        assessment.refresh_from_db()
+        self.assertTrue(assessment.released)
+
     def test_negative_score_rejected(self):
         self.client.force_authenticate(user=self.lecturer)
         response = self.client.post(
@@ -169,3 +206,25 @@ class AssessmentApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_assessment_writes_reject_unknown_fields(self):
+        self.client.force_authenticate(user=self.lecturer)
+        create = self.client.post(
+            reverse("assessments:list"),
+            {
+                "student": str(self.student.id),
+                "course": str(self.course.id),
+                "score": "75.00",
+                "created_by": str(self.other_lecturer.id),
+            },
+            format="json",
+        )
+        self.assertEqual(create.status_code, 400)
+
+        assessment = Assessment.objects.create(student=self.student, course=self.course)
+        update = self.client.patch(
+            reverse("assessments:detail", args=[assessment.pk]),
+            {"status": "official"},
+            format="json",
+        )
+        self.assertEqual(update.status_code, 400)

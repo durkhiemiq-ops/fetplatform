@@ -10,6 +10,15 @@ class AttendanceSession(models.Model):
         EXPIRED = "EXPIRED", "Expired"
         CLOSED = "CLOSED", "Closed"
 
+    class Mode(models.TextChoices):
+        #: One short-lived QR on the projector/lecturer screen. Every enrolled
+        #: student in the room scans it; each scan credits only the scanner.
+        PROJECTOR = "PROJECTOR", "Projected code"
+        #: Distributed stations: the lecturer seeds eligible students, and every
+        #: successful scan auto-activates that student as a station for this
+        #: session (seed -> B -> C cascade).
+        STATIONS = "STATIONS", "Student stations"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     class_session = models.ForeignKey(
         "academic.ClassSession", on_delete=models.PROTECT, related_name="attendance_sessions"
@@ -18,6 +27,7 @@ class AttendanceSession(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="attendance_sessions_started"
     )
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    mode = models.CharField(max_length=10, choices=Mode.choices, default=Mode.PROJECTOR)
     started_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 
@@ -27,6 +37,20 @@ class AttendanceSession(models.Model):
 
 
 class AttendanceCheckpoint(models.Model):
+    """A session-scoped scan point — in STATION mode this row *is* the station.
+
+    There is deliberately one table: a station is not a second, parallel copy of
+    a checkpoint. Rows are created either by the lecturer's seed selection
+    (``source=SEED``, no attendance implied) or automatically when a student
+    scans an active station and is therefore able to relay scans
+    (``source=CASCADE``). Authority is session-scoped and dies with the session:
+    it is never a role on the user account.
+    """
+
+    class Source(models.TextChoices):
+        SEED = "SEED", "Lecturer seed"
+        CASCADE = "CASCADE", "Activated by a valid scan"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     attendance_session = models.ForeignKey(
         AttendanceSession, on_delete=models.CASCADE, related_name="checkpoints"
@@ -34,6 +58,15 @@ class AttendanceCheckpoint(models.Model):
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="attendance_checkpoints"
     )
+    source = models.CharField(max_length=10, choices=Source.choices, default=Source.SEED)
+    activated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="station_activations",
+    )
+    activated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -63,8 +96,16 @@ class AttendanceRecord(models.Model):
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="attendance_records"
     )
+    # The scan point the credit came from: a station in STATIONS mode, or None
+    # for a projected-code scan, which has no per-student scan point at all.
+    # NULL is a real value here, not a fallback — projected sessions never had
+    # one, and inventing a placeholder row would fake a station.
     checkpoint = models.ForeignKey(
-        AttendanceCheckpoint, on_delete=models.PROTECT, related_name="attendance_records"
+        AttendanceCheckpoint,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="attendance_records",
     )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PRESENT)
     verification_method = models.CharField(

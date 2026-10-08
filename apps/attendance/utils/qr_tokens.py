@@ -1,22 +1,34 @@
-"""One-time QR token mechanics for attendance.
+"""Shared, short-lived QR token mechanics for attendance.
 
 This module deliberately makes no eligibility or authorization decision.  Its
-job is limited to issuing short-lived random tokens and atomically consuming
-them exactly once.
+job is limited to issuing short-lived random tokens and proving that a token
+presented to the server was really issued by it.
+
+Why validation does not consume
+-------------------------------
+A classroom QR is *shared* by design: one projected code, or one station's
+code, must keep working for every student who scans it inside its TTL.  The MVP
+mandate is explicit — a shared QR must not be globally consumed after the first
+student, or the class behind them is locked out.  Replay therefore cannot be
+solved by burning the token; it is solved by the layers around it:
+
+* the token lives only ``QR_TOKEN_TTL_SECONDS`` (10s by default),
+* it is bound to one session (and, for a station, one scan point),
+* every scan is credited to the authenticated scanner and no one else, and
+* a database UNIQUE(session, student) constraint makes a second credit for the
+  same student impossible, no matter how many times the code is re-scanned.
+
+So this module validates; ``attendance_service`` deduplicates.
 """
 
 from __future__ import annotations
 
 import json
 import secrets
-import threading
-from datetime import timedelta
 from typing import Any, Dict, Optional
 
 from django.conf import settings
 from django.core.cache import cache
-
-from core.common import utc_now
 
 
 class QRTokenError(ValueError):
@@ -27,25 +39,8 @@ class TokenExpiredError(QRTokenError):
     """The token is absent or its TTL has elapsed (BR-033)."""
 
 
-class TokenAlreadyUsedError(QRTokenError):
-    """The token has already been atomically consumed (BR-038)."""
-
-
 class InvalidTokenError(QRTokenError):
     """The token payload is malformed or does not belong to this system."""
-
-
-_LOCAL_TOKEN_LOCK = threading.Lock()
-
-#: How long a "this token was consumed" tombstone is retained.
-#:
-#: Without it the Redis path cannot tell an *expired* token from an *already
-#: used* one -- ``GET``+``DEL`` returns nil for both -- so an expired QR
-#: produced 409 on Redis but 404 on LocMem. The same HTTP response must not
-#: depend on which cache backend a deployment happens to run. The tombstone is
-#: cached with a TTL rather than kept in a process-global set, which previously
-#: grew for the lifetime of the process.
-_USED_TOMBSTONE_TTL_SECONDS = 300
 
 
 def get_qr_token_ttl_seconds() -> int:
@@ -60,40 +55,15 @@ def _key(token: str) -> str:
     return f"attendance:qr:{token}"
 
 
-def _used_key(token: str) -> str:
-    """Cache key of the tombstone marking ``token`` as already consumed."""
-    return f"attendance:qr:used:{token}"
-
-
-def _mark_used(token: str, *, client: Optional[Any] = None) -> None:
-    """Record that ``token`` has been consumed, so a replay is distinguishable
-    from a token that simply expired."""
-    if client is not None:  # pragma: no cover - exercised on Redis deployments
-        client.set(_used_key(token), "1", ex=_USED_TOMBSTONE_TTL_SECONDS)
-    else:
-        cache.set(_used_key(token), "1", timeout=_USED_TOMBSTONE_TTL_SECONDS)
-
-
-def _was_used(token: str, *, client: Optional[Any] = None) -> bool:
-    if client is not None:  # pragma: no cover - exercised on Redis deployments
-        try:
-            return bool(client.exists(_used_key(token)))
-        except Exception:
-            # Fail closed towards "used": replaying a token must never be the
-            # cheaper interpretation when the store is unavailable.
-            return True
-    return bool(cache.get(_used_key(token)))
-
-
 def _redis_client() -> Optional[Any]:
     """Return a raw Redis client only for Django's Redis cache backend.
 
     django_redis exposes the raw client differently across versions: older
     releases put ``get_client`` on the ``RedisCache`` backend itself, 7.x
     wraps it in a ``DefaultClient`` reachable as ``backend.client``.  Probe
-    both so the production atomic path engages wherever Redis is configured;
-    any other backend returns None and callers fall back to the Django cache
-    API (single-process development/tests only).
+    both so the production path engages wherever Redis is configured; any
+    other backend returns None and callers fall back to the Django cache API
+    (single-process development/tests only).
     """
     backend = getattr(cache, "_cache", None)
     if backend is None:
@@ -112,39 +82,49 @@ def _redis_client() -> Optional[Any]:
         return None
 
 
-def generate_token(*, checkpoint_id: Any, session_id: Any) -> str:
-    """Issue a cryptographically random, TTL-bound checkpoint token."""
-    if checkpoint_id is None or session_id is None:
-        raise InvalidTokenError("Checkpoint and session are required")
+def generate_token(*, session_id: Any, checkpoint_id: Any = None) -> str:
+    """Issue a cryptographically random, TTL-bound token for one scan point.
+
+    ``checkpoint_id`` present  -> STATION token (distributed stations mode).
+    ``checkpoint_id`` absent   -> PROJECTOR token (projected code mode).
+
+    The scope is derived server-side from where the request came from; no
+    client-supplied field ever decides it.
+    """
+    if session_id is None:
+        raise InvalidTokenError("Session is required")
 
     token = secrets.token_urlsafe(32)
-    payload = {"checkpoint_id": str(checkpoint_id), "session_id": str(session_id)}
+    payload: Dict[str, str] = {"session_id": str(session_id)}
+    if checkpoint_id is not None:
+        payload["checkpoint_id"] = str(checkpoint_id)
+        payload["scope"] = "STATION"
+    else:
+        payload["scope"] = "PROJECTOR"
+
     ttl = get_qr_token_ttl_seconds()
     key = _key(token)
     client = _redis_client()
     if client is not None:
         # Redis SET with NX and expiry avoids a cache serialization dependency.
         if not client.set(key, json.dumps(payload), ex=ttl, nx=True):  # pragma: no cover - astronomically unlikely
-            return generate_token(checkpoint_id=checkpoint_id, session_id=session_id)
+            return generate_token(session_id=session_id, checkpoint_id=checkpoint_id)
     else:
-        # Development/test simulation only.  The lock provides atomicity in one
-        # process; production must use Redis for multi-worker atomicity.
+        # Development/test simulation only.
         cache.set(key, payload, timeout=ttl)
     return token
 
 
-def consume_token(token: str) -> Dict[str, str]:
-    """Atomically retrieve and invalidate a one-time token.
+def validate_token(token: str) -> Dict[str, str]:
+    """Return the payload of a live token without consuming it.
 
-    Redis uses one Lua operation (GET then DEL in one server-side command).
-    The local development cache uses one process lock.  There is deliberately
-    no read-then-write path that could let two simultaneous scans succeed.
+    Raises:
+        TokenExpiredError: never issued, empty, or TTL elapsed (404).
+        InvalidTokenError: stored payload is unreadable (404).
 
-    Both backends report the same two failure modes with the same exception
-    types, so the HTTP status a client sees does not depend on the deployment:
-
-    * never issued, or TTL elapsed -> ``TokenExpiredError`` (404)
-    * already consumed             -> ``TokenAlreadyUsedError`` (409)
+    Repeated validation of the same live token is expected and safe: the
+    caller, not the token, is the identity, and the caller can only ever be
+    credited once per session.
     """
     if not token or not isinstance(token, str):
         raise TokenExpiredError("Attendance token is missing or expired")
@@ -152,35 +132,20 @@ def consume_token(token: str) -> Dict[str, str]:
     key = _key(token)
     client = _redis_client()
     if client is not None:
-        raw = client.eval(
-            "local value = redis.call('GET', KEYS[1]); "
-            "if value then redis.call('DEL', KEYS[1]); end; return value",
-            1,
-            key,
-        )
+        raw = client.get(key)
         if raw is None:
-            # Redis cannot distinguish "absent" from "already deleted" on its
-            # own; the tombstone is what makes the two cases separable.
-            if _was_used(token, client=client):
-                raise TokenAlreadyUsedError("Attendance token was already used")
             raise TokenExpiredError("Attendance token is missing or expired")
-        _mark_used(token, client=client)
         try:
             return json.loads(raw)
         except (TypeError, ValueError) as exc:  # pragma: no cover - cache corruption
             raise InvalidTokenError("Attendance token payload is invalid") from exc
 
-    with _LOCAL_TOKEN_LOCK:
-        if _was_used(token):
-            raise TokenAlreadyUsedError("Attendance token was already used")
-        payload = cache.get(key)
-        if payload is None:
-            raise TokenExpiredError("Attendance token is missing or expired")
-        cache.delete(key)
-        _mark_used(token)
-        return payload
-
-
-def validate_token(token: str) -> Dict[str, str]:
-    """Backward-compatible public name; validation consumes the token once."""
-    return consume_token(token)
+    payload = cache.get(key)
+    if payload is None:
+        raise TokenExpiredError("Attendance token is missing or expired")
+    if isinstance(payload, str):
+        try:
+            return json.loads(payload)
+        except ValueError as exc:  # pragma: no cover - cache corruption
+            raise InvalidTokenError("Attendance token payload is invalid") from exc
+    return payload

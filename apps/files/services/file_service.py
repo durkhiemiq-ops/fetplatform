@@ -1,361 +1,369 @@
-"""File business logic for uploaded academic materials and protected files.
+"""Secure course-file and learning-material business rules."""
 
-This service intentionally keeps the logic framework-agnostic and simple. It does
-not build HTTP responses or require Django request objects; instead, it validates
-file metadata, access authorization, and storage constraints.
+import codecs
+import hashlib
+import zipfile
+from pathlib import PurePath
 
-Relevant rules:
-- BR-090: learning materials must belong to a valid academic context.
-- BR-091: protected files require authorization.
-- BR-092: private files must not be publicly accessible via permanent URLs.
-- BR-093: relevant metadata must be preserved.
-- BR-180: large files belong in external storage; database stores metadata.
-- BR-181: protected files require authorization checks.
-- BR-182: validate allowed file types.
-- BR-183: enforce file size limits based on purpose and type.
-"""
+from django.conf import settings
+from django.db import transaction
 
-from __future__ import annotations
+from apps.academic.models import CourseOffering, Enrollment
+from core.academic_access import is_admin_user, is_authorized_academic_user, normalize_role
+from core.audit import write_audit_entry
 
-from typing import Any, Dict, Iterable, Optional, Sequence, Protocol
-
-from core.academic_access import (
-    ACADEMIC_CONTEXTS,
-    SCOPE_CLASS,
-    SCOPE_COURSE,
-    SCOPE_DEPARTMENT,
-    SCOPE_FACULTY,
-    user_has_scope_access,
-)
-from core.common import ConfigurationError, utc_now
-
-try:
-    from django.conf import settings as django_settings
-    DEFAULT_MAX_FILE_SIZE_BYTES = getattr(django_settings, "MAX_FILE_SIZE_BYTES", 25 * 1024 * 1024)
-except ImportError:
-    DEFAULT_MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
+from ..models import LearningMaterial, UploadedFile
 
 
 class FileServiceError(ValueError):
-    """Base error for file validation or access decisions."""
+    pass
 
 
-class InvalidAcademicContextError(FileServiceError):
-    """Raised when a file is not tied to a valid academic context."""
-
-
-class FileAccessDeniedError(FileServiceError):
-    """Raised when a user is not allowed to access a protected file."""
+class ResourceNotFoundError(FileServiceError):
+    pass
 
 
 class FileValidationError(FileServiceError):
-    """Raised when file type or size validation fails."""
+    pass
 
 
-class FileRecordLike(Protocol):
-    id: Any
-    owner_id: Any
-    academic_context_type: Any
-    academic_context_id: Any
-    file_name: Any
-    content_type: Any
-    size_bytes: Any
-    is_private: Any
-    storage_location: Any
-    uploaded_by_id: Any
-    created_at: Any
-    metadata: Any
-
-    def save(self) -> Any:
-        ...
+class FileConflictError(FileServiceError):
+    pass
 
 
-ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-ALLOWED_TEXT_TYPES = {"text/plain", "application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
-ALLOWED_VIDEO_TYPES = {"video/mp4", "video/webm"}
-ALLOWED_TYPES = ALLOWED_IMAGE_TYPES | ALLOWED_TEXT_TYPES | ALLOWED_VIDEO_TYPES
+ALLOWED_BY_EXTENSION = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".txt": "text/plain",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+}
+DANGEROUS_SUFFIXES = {
+    ".exe", ".dll", ".com", ".bat", ".cmd", ".ps1", ".sh", ".js", ".html",
+    ".htm", ".svg", ".php", ".py", ".jar", ".msi", ".scr",
+}
 
 
-def _normalize_content_type(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).strip().lower()
+def _is_admin(user):
+    return is_admin_user(user)
 
 
-def _normalize_context_type(value: Any) -> str:
-    if value is None:
-        raise InvalidAcademicContextError("Academic context type is required")
-    normalized = str(value).strip().lower()
-    if normalized not in ACADEMIC_CONTEXTS:
-        raise InvalidAcademicContextError(f"Unsupported academic context type: {value}")
-    return normalized
-
-
-def validate_file_type(file_type: Any, allowed_types: Optional[Iterable[str]] = None) -> str:
-    """Validate and normalize a file type.
-
-    Time complexity: O(1)
-    Space complexity: O(1)
-    """
-    # BR-182: file types must be validated and allowed.
-    normalized = _normalize_content_type(file_type)
-    allowed = {t.lower() for t in (allowed_types or ALLOWED_TYPES)}
-    if not normalized:
-        raise FileValidationError("File type is required")
-    if normalized not in allowed:
-        raise FileValidationError(f"File type '{file_type}' is not allowed")
-    return normalized
-
-
-def validate_file_size(size_bytes: Any, max_size_bytes: Optional[int] = None) -> int:
-    """Validate that a file size is within the configured limit."""
-    # BR-183: enforce maximum file sizes according to purpose and file type.
-    try:
-        size = int(size_bytes)
-    except (TypeError, ValueError) as exc:
-        raise FileValidationError("File size must be an integer") from exc
-    if size < 0:
-        raise FileValidationError("File size cannot be negative")
-    limit = max_size_bytes if max_size_bytes is not None else DEFAULT_MAX_FILE_SIZE_BYTES
-    if size > limit:
-        raise FileValidationError(f"File size exceeds the maximum of {limit} bytes")
-    return size
-
-
-def validate_academic_context(
-    *,
-    academic_context_type: Any,
-    academic_context_id: Any,
-    context_lookup: Optional[Any] = None,
-) -> None:
-    """Require the file to belong to a valid academic context.
-
-    This is intentionally a simple guard: no hidden business logic beyond the
-    rule that a file must reference a valid academic context.
-    """
-    # BR-090: learning materials must not exist outside a valid academic context.
-    normalized = _normalize_context_type(academic_context_type)
-    if academic_context_id is None:
-        raise InvalidAcademicContextError("Academic context id is required")
-    if context_lookup is None:
-        raise InvalidAcademicContextError(
-            "A context lookup is required to verify academic ownership"
-        )
-    try:
-        exists = context_lookup(context_type=normalized, context_id=academic_context_id)
-    except TypeError:
-        exists = context_lookup(normalized, academic_context_id)
-    if not bool(exists):
-        raise InvalidAcademicContextError("Academic context does not exist")
-
-
-def create_file_record(
-    *,
-    FileModel: type[FileRecordLike],
-    owner_id: Any,
-    file_name: str,
-    content_type: str,
-    size_bytes: Any,
-    academic_context_type: Any,
-    academic_context_id: Any,
-    storage_location: str,
-    is_private: bool = True,
-    metadata: Optional[Dict[str, Any]] = None,
-    context_lookup: Optional[Any] = None,
-    allowed_types: Optional[Iterable[str]] = None,
-    max_size_bytes: Optional[int] = None,
-    actor_id: Any = None,
-    upload_authorizer: Optional[Any] = None,
-) -> FileRecordLike:
-    """Create a file record only when the file is valid and academically scoped."""
-    if FileModel is None:
-        raise ConfigurationError("FileModel is required")
-    if owner_id is None:
-        raise FileServiceError("File owner is required")
-    if actor_id is None or upload_authorizer is None:
-        raise FileServiceError("An authenticated uploader and authorization check are required")
-    if str(actor_id) != str(owner_id):
-        raise FileServiceError("Uploader identity must match the file owner")
-    try:
-        authorized = upload_authorizer(
-            actor_id=actor_id,
-            academic_context_type=academic_context_type,
-            academic_context_id=academic_context_id,
-        )
-    except TypeError:
-        authorized = upload_authorizer(actor_id, academic_context_type, academic_context_id)
-    if not bool(authorized):
-        raise FileAccessDeniedError("User is not authorized to upload to this context")
-    if not file_name or not str(file_name).strip():
-        raise FileValidationError("File name is required")
-    if not storage_location or not str(storage_location).strip():
-        raise FileValidationError("Storage location is required")
-
-    validate_academic_context(
-        academic_context_type=academic_context_type,
-        academic_context_id=academic_context_id,
-        context_lookup=context_lookup,
+def _is_manager(user, offering):
+    return _is_admin(user) or (
+        is_authorized_academic_user(user)
+        and normalize_role(getattr(user, "role", None)) == "lecturer"
+        and offering.lecturer_id == getattr(user, "id", None)
     )
-    normalized_type = validate_file_type(content_type, allowed_types=allowed_types)
-    validated_size = validate_file_size(size_bytes, max_size_bytes=max_size_bytes)
 
-    record = FileModel()
-    if hasattr(record, "owner_id"):
-        record.owner_id = owner_id
-    if hasattr(record, "academic_context_type"):
-        record.academic_context_type = _normalize_context_type(academic_context_type)
-    if hasattr(record, "academic_context_id"):
-        record.academic_context_id = academic_context_id
-    if hasattr(record, "file_name"):
-        record.file_name = file_name
-    if hasattr(record, "content_type"):
-        record.content_type = normalized_type
-    if hasattr(record, "size_bytes"):
-        record.size_bytes = validated_size
-    if hasattr(record, "storage_location"):
-        record.storage_location = storage_location
-    if hasattr(record, "is_private"):
-        record.is_private = bool(is_private)
-    if hasattr(record, "metadata"):
-        record.metadata = metadata or {}
-    if hasattr(record, "uploaded_by_id"):
-        record.uploaded_by_id = owner_id
-    if hasattr(record, "created_at"):
-        record.created_at = utc_now()
-    record.save()
+
+def _is_enrolled(user, offering):
+    return (
+        normalize_role(getattr(user, "role", None)) == "student"
+        and Enrollment.objects.filter(
+            student=user,
+            course_offering=offering,
+            is_active=True,
+            status__iexact="active",
+        ).exists()
+    )
+
+
+def _can_read(user, offering):
+    return _is_manager(user, offering) or _is_enrolled(user, offering)
+
+
+def _manageable_offering(user, offering_id):
+    queryset = CourseOffering.objects.select_related("course", "lecturer")
+    if _is_admin(user):
+        return queryset.filter(pk=offering_id).first()
+    if (
+        is_authorized_academic_user(user)
+        and normalize_role(getattr(user, "role", None)) == "lecturer"
+    ):
+        return queryset.filter(pk=offering_id, lecturer=user).first()
+    return None
+
+
+def _readable_offering(user, offering_id):
+    queryset = CourseOffering.objects.select_related("course", "lecturer")
+    if _is_admin(user):
+        return queryset.filter(pk=offering_id).first()
+    if (
+        is_authorized_academic_user(user)
+        and normalize_role(getattr(user, "role", None)) == "lecturer"
+    ):
+        return queryset.filter(pk=offering_id, lecturer=user).first()
+    if normalize_role(getattr(user, "role", None)) == "student":
+        return queryset.filter(
+            pk=offering_id,
+            enrollments__student=user,
+            enrollments__is_active=True,
+            enrollments__status__iexact="active",
+        ).distinct().first()
+    return None
+
+
+def _safe_name(raw_name):
+    name = str(raw_name or "").strip()
+    if not name or len(name) > 255:
+        raise FileValidationError("File name is required and must be at most 255 characters.")
+    normalized = name.replace("\\", "/")
+    if "/" in normalized or PurePath(normalized).name != normalized:
+        raise FileValidationError("File name must not contain a path.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise FileValidationError("File name contains invalid control characters.")
+    suffixes = [suffix.lower() for suffix in PurePath(normalized).suffixes]
+    if not suffixes or suffixes[-1] not in ALLOWED_BY_EXTENSION:
+        raise FileValidationError("File type is not allowed.")
+    if any(suffix in DANGEROUS_SUFFIXES for suffix in suffixes[:-1]):
+        raise FileValidationError("File name contains a dangerous executable extension.")
+    return normalized, suffixes[-1]
+
+
+def _read_header(upload, length=65536):
+    upload.seek(0)
+    header = upload.read(length)
+    upload.seek(0)
+    return header
+
+
+def _validate_docx(upload):
+    upload.seek(0)
+    try:
+        with zipfile.ZipFile(upload) as archive:
+            entries = archive.infolist()
+            names = {entry.filename for entry in entries}
+            if len(entries) > 2000 or sum(entry.file_size for entry in entries) > 100 * 1024 * 1024:
+                raise FileValidationError("Office document expands beyond the safe limit.")
+            if "[Content_Types].xml" not in names or not any(
+                name.startswith("word/") for name in names
+            ):
+                raise FileValidationError("The file is not a valid Word document.")
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise FileValidationError("The file is not a valid Word document.") from exc
+    finally:
+        upload.seek(0)
+
+
+def _detected_mime(upload, extension):
+    header = _read_header(upload)
+    if extension == ".pdf" and header.startswith(b"%PDF-"):
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension == ".png" and header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension in {".jpg", ".jpeg"} and header.startswith(b"\xff\xd8\xff"):
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension == ".gif" and header.startswith((b"GIF87a", b"GIF89a")):
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension == ".webp" and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension == ".doc" and header.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension == ".docx":
+        _validate_docx(upload)
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension == ".mp4" and len(header) >= 12 and header[4:8] == b"ftyp":
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension == ".webm" and header.startswith(b"\x1aE\xdf\xa3"):
+        return ALLOWED_BY_EXTENSION[extension]
+    if extension == ".txt":
+        return ALLOWED_BY_EXTENSION[extension]
+    raise FileValidationError("File contents do not match the allowed file extension.")
+
+
+def _hash_and_measure(upload, mime_type):
+    digest = hashlib.sha256()
+    total = 0
+    text_decoder = codecs.getincrementaldecoder("utf-8")() if mime_type == "text/plain" else None
+    upload.seek(0)
+    for chunk in upload.chunks():
+        total += len(chunk)
+        if total > settings.MAX_FILE_SIZE_BYTES:
+            raise FileValidationError(
+                f"File exceeds the maximum of {settings.MAX_FILE_SIZE_BYTES} bytes."
+            )
+        digest.update(chunk)
+        if text_decoder is not None:
+            if b"\x00" in chunk:
+                raise FileValidationError("Text files must not contain binary data.")
+            try:
+                decoded = text_decoder.decode(chunk)
+            except UnicodeDecodeError as exc:
+                raise FileValidationError("Text files must use UTF-8 encoding.") from exc
+            if any(ord(char) < 32 and char not in "\t\r\n" for char in decoded):
+                raise FileValidationError("Text files contain invalid control characters.")
+    if text_decoder is not None:
+        try:
+            text_decoder.decode(b"", final=True)
+        except UnicodeDecodeError as exc:
+            raise FileValidationError("Text files must use UTF-8 encoding.") from exc
+    upload.seek(0)
+    if total == 0:
+        raise FileValidationError("Empty files are not allowed.")
+    return total, digest.hexdigest()
+
+
+def create_uploaded_file(*, actor, offering_id, upload):
+    offering = _manageable_offering(actor, offering_id)
+    if offering is None:
+        raise ResourceNotFoundError("Course offering not found.")
+    original_name, extension = _safe_name(upload.name)
+    if getattr(upload, "size", 0) > settings.MAX_FILE_SIZE_BYTES:
+        raise FileValidationError(
+            f"File exceeds the maximum of {settings.MAX_FILE_SIZE_BYTES} bytes."
+        )
+    mime_type = _detected_mime(upload, extension)
+    size_bytes, sha256 = _hash_and_measure(upload, mime_type)
+    record = UploadedFile(
+        course_offering=offering,
+        uploaded_by=actor,
+        original_name=original_name,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        sha256=sha256,
+    )
+    stored_name = None
+    try:
+        with transaction.atomic():
+            record.file.save(original_name, upload, save=False)
+            stored_name = record.file.name
+            record.save()
+            write_audit_entry(
+                action="file_uploaded",
+                resource_type="uploaded_file",
+                resource_id=record.id,
+                actor_id=actor.id,
+                details={
+                    "course_offering_id": offering.id,
+                    "original_name": original_name,
+                    "mime_type": mime_type,
+                    "size_bytes": size_bytes,
+                    "sha256": sha256,
+                },
+            )
+    except Exception:
+        if stored_name:
+            record.file.storage.delete(stored_name)
+        raise
     return record
 
 
-def user_can_access_file(
-    *,
-    file_record: Any,
-    user: Any,
-    user_course_ids: Optional[Iterable[Any]] = None,
-    user_class_ids: Optional[Iterable[Any]] = None,
-    user_department_id: Optional[Any] = None,
-    user_faculty_id: Optional[Any] = None,
-    user_roles: Optional[Sequence[str]] = None,
-) -> bool:
-    """Return whether a user may access a file.
+def list_materials(*, actor, offering_id):
+    offering = _readable_offering(actor, offering_id)
+    if offering is None:
+        raise ResourceNotFoundError("Course offering not found.")
+    return LearningMaterial.objects.filter(
+        course_offering=offering,
+        status=LearningMaterial.Status.ACTIVE,
+        file__status=UploadedFile.Status.ACTIVE,
+    ).select_related("file")
 
-    Time complexity: O(1) for direct scope checks with set membership lookups.
-    Space complexity: O(1) extra, ignoring the copied sets from iterables.
-    """
-    # BR-091 and BR-181: authorization checks are required before access.
-    if file_record is None or user is None:
-        return False
-    if getattr(file_record, "is_private", False) is False:
-        return True
 
-    context_type = str(getattr(file_record, "academic_context_type", "")).lower()
-    context_id = getattr(file_record, "academic_context_id", None)
-    if getattr(file_record, "owner_id", None) == getattr(user, "id", None):
-        return True
-
-    if context_type == SCOPE_COURSE:
-        return user_has_scope_access(
-            user=user,
-            scope=SCOPE_COURSE,
-            scope_id=context_id,
-            user_course_ids=user_course_ids,
-            user_class_ids=user_class_ids,
-            user_department_id=user_department_id,
-            user_faculty_id=user_faculty_id,
-            user_roles=user_roles,
+def create_material(*, actor, offering_id, title, file, description=""):
+    offering = _manageable_offering(actor, offering_id)
+    if offering is None:
+        raise ResourceNotFoundError("Course offering not found.")
+    with transaction.atomic():
+        # Serialize competing attachments for the same file. The database
+        # unique constraint is the final backstop; this lock keeps the losing
+        # request on the documented 409 path instead of an IntegrityError/500.
+        uploaded_file = UploadedFile.objects.select_for_update().filter(
+            pk=file,
+            course_offering=offering,
+            status=UploadedFile.Status.ACTIVE,
+        ).first()
+        if uploaded_file is None:
+            raise ResourceNotFoundError("File not found.")
+        if LearningMaterial.objects.filter(
+            file=uploaded_file, status=LearningMaterial.Status.ACTIVE
+        ).exists():
+            raise FileConflictError("File is already attached to an active material.")
+        material = LearningMaterial.objects.create(
+            course_offering=offering,
+            uploaded_by=actor,
+            title=title,
+            description=description,
+            file=uploaded_file,
         )
-
-    if context_type == SCOPE_CLASS:
-        return user_has_scope_access(
-            user=user,
-            scope=SCOPE_CLASS,
-            scope_id=context_id,
-            user_course_ids=user_course_ids,
-            user_class_ids=user_class_ids,
-            user_department_id=user_department_id,
-            user_faculty_id=user_faculty_id,
-            user_roles=user_roles,
+        write_audit_entry(
+            action="learning_material_created",
+            resource_type="learning_material",
+            resource_id=material.id,
+            actor_id=actor.id,
+            details={"course_offering_id": offering.id, "file_id": uploaded_file.id},
         )
+    return material
 
-    if context_type == SCOPE_DEPARTMENT:
-        return user_has_scope_access(
-            user=user,
-            scope=SCOPE_DEPARTMENT,
-            scope_id=context_id,
-            user_course_ids=user_course_ids,
-            user_class_ids=user_class_ids,
-            user_department_id=user_department_id,
-            user_faculty_id=user_faculty_id,
-            user_roles=user_roles,
+
+def get_material(*, actor, material_id, require_manage=False):
+    material = LearningMaterial.objects.select_related("course_offering", "file").filter(
+        pk=material_id,
+        status=LearningMaterial.Status.ACTIVE,
+        file__status=UploadedFile.Status.ACTIVE,
+    ).first()
+    if material is None:
+        raise ResourceNotFoundError("Material not found.")
+    allowed = _is_manager(actor, material.course_offering) if require_manage else _can_read(
+        actor, material.course_offering
+    )
+    if not allowed:
+        raise ResourceNotFoundError("Material not found.")
+    return material
+
+
+def update_material(*, actor, material_id, changes):
+    material = get_material(actor=actor, material_id=material_id, require_manage=True)
+    old_value = {"title": material.title, "description": material.description}
+    for field in ("title", "description"):
+        if field in changes:
+            setattr(material, field, changes[field])
+    with transaction.atomic():
+        material.save(update_fields=[*changes.keys(), "updated_at"])
+        write_audit_entry(
+            action="learning_material_updated",
+            resource_type="learning_material",
+            resource_id=material.id,
+            actor_id=actor.id,
+            old_value=old_value,
+            new_value={"title": material.title, "description": material.description},
         )
+    return material
 
-    if context_type == SCOPE_FACULTY:
-        return user_has_scope_access(
-            user=user,
-            scope=SCOPE_FACULTY,
-            scope_id=context_id,
-            user_course_ids=user_course_ids,
-            user_class_ids=user_class_ids,
-            user_department_id=user_department_id,
-            user_faculty_id=user_faculty_id,
-            user_roles=user_roles,
+
+def archive_material(*, actor, material_id):
+    material = get_material(actor=actor, material_id=material_id, require_manage=True)
+    with transaction.atomic():
+        material.status = LearningMaterial.Status.ARCHIVED
+        material.save(update_fields=["status", "updated_at"])
+        if not LearningMaterial.objects.filter(
+            file=material.file, status=LearningMaterial.Status.ACTIVE
+        ).exists():
+            material.file.status = UploadedFile.Status.ARCHIVED
+            material.file.save(update_fields=["status", "updated_at"])
+        write_audit_entry(
+            action="learning_material_archived",
+            resource_type="learning_material",
+            resource_id=material.id,
+            actor_id=actor.id,
+            details={"course_offering_id": material.course_offering_id},
         )
-
-    return False
-
-
-def access_file(
-    *,
-    file_record: Any,
-    user: Any,
-    user_course_ids: Optional[Iterable[Any]] = None,
-    user_class_ids: Optional[Iterable[Any]] = None,
-    user_department_id: Optional[Any] = None,
-    user_faculty_id: Optional[Any] = None,
-    user_roles: Optional[Sequence[str]] = None,
-) -> FileRecordLike:
-    """Grant access only when the file is valid and the user is authorized."""
-    # BR-091, BR-181: authorization is required before access; default deny.
-    if file_record is None:
-        raise FileAccessDeniedError("File not found")
-    if not user_can_access_file(
-        file_record=file_record,
-        user=user,
-        user_course_ids=user_course_ids,
-        user_class_ids=user_class_ids,
-        user_department_id=user_department_id,
-        user_faculty_id=user_faculty_id,
-        user_roles=user_roles,
-    ):
-        raise FileAccessDeniedError("User does not have access to this protected file")
-
-    if getattr(file_record, "is_private", False) and not getattr(file_record, "storage_location", None):
-        raise FileAccessDeniedError("Protected file record is missing an authorized storage location")
-
-    # BR-092: private files must not be exposed via permanent unrestricted URLs.
-    if getattr(file_record, "is_private", False):
-        location = str(getattr(file_record, "storage_location", "")).strip()
-        if location.startswith("http://") or location.startswith("https://"):
-            raise FileAccessDeniedError("Private files cannot be publicly exposed through unrestricted URLs")
-
-    return file_record
+    return material
 
 
-def preserve_file_metadata(
-    *,
-    file_record: Any,
-    metadata: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Merge metadata while preserving canonical academic information."""
-    # BR-093 and BR-180: metadata must remain attached even when the file itself is
-    # stored outside the relational database.
-    if file_record is None:
-        raise FileServiceError("File record is required")
-    existing = getattr(file_record, "metadata", None) or {}
-    if not isinstance(existing, dict):
-        existing = {}
-    merged = dict(existing)
-    if metadata:
-        merged.update(metadata)
-    file_record.metadata = merged
-    file_record.save()
-    return merged
+def get_downloadable_file(*, actor, file_id):
+    record = UploadedFile.objects.select_related("course_offering").filter(
+        pk=file_id, status=UploadedFile.Status.ACTIVE
+    ).first()
+    if record is None or not _can_read(actor, record.course_offering):
+        raise ResourceNotFoundError("File not found.")
+    if normalize_role(getattr(actor, "role", None)) == "student" and not record.materials.filter(
+        status=LearningMaterial.Status.ACTIVE
+    ).exists():
+        raise ResourceNotFoundError("File not found.")
+    return record

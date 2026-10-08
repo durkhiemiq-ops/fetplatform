@@ -6,23 +6,29 @@ project-standard {success, data, error} envelope.  Reads are open to any
 authenticated user; school-year/semester writes are administrator-only.
 """
 
+from django.db.models import Q
+
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.academic_access import is_admin_user
-from core.audit import write_audit_entry
+from core.academic_access import is_admin_user, is_authorized_academic_user
 
 from apps.accounts.models import User
 
 from .models import (
-    ClassSession, Course, CourseOffering, Department, Enrollment, Faculty,
-    SchoolYear, Semester,
+    ClassSchedule, ClassSession, Course, CourseOffering, Department,
+    Enrollment, Faculty, SchoolYear, Semester,
 )
 from .serializers import (
+    ClassDefinitionCreateSerializer,
+    ClassDefinitionSerializer,
+    ClassScheduleCreateSerializer,
+    ClassScheduleSerializer,
     ClassSessionSerializer,
     CourseOfferingSerializer,
     CourseSerializer,
+    DepartmentCreateSerializer,
     DepartmentSerializer,
     EnrollmentCreateSerializer,
     FacultySerializer,
@@ -51,6 +57,18 @@ from .services.registration_service import (
     eligible_offerings,
     register_student,
 )
+from .services.structure_service import (
+    AcademicStructureAuthorizationError,
+    AcademicStructureConflictError,
+    AcademicStructureError,
+    archive_class_schedule,
+    create_class_definition,
+    create_class_schedule,
+    create_course_offering,
+    create_department,
+    create_school_year,
+    update_course_offering,
+)
 
 
 def _success_response(data, http_status=200):
@@ -72,12 +90,36 @@ class FacultyListView(APIView):
         return _success_response(FacultySerializer(faculties, many=True).data)
 
 
+def _create_department_response(request):
+    if not is_admin_user(request.user):
+        return _error_response(
+            "FORBIDDEN", "Only administrators create departments.", 403
+        )
+    serializer = DepartmentCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    try:
+        department = create_department(
+            actor=request.user,
+            **serializer.validated_data,
+        )
+    except AcademicStructureAuthorizationError as exc:
+        return _error_response("FORBIDDEN", str(exc), 403)
+    except AcademicStructureConflictError as exc:
+        return _error_response("CONFLICT", str(exc), 409)
+    except AcademicStructureError as exc:
+        return _error_response("INVALID_INPUT", str(exc), 400)
+    return _success_response(DepartmentSerializer(department).data, 201)
+
+
 class DepartmentListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         departments = Department.objects.select_related("faculty")
         return _success_response(DepartmentSerializer(departments, many=True).data)
+
+    def post(self, request):
+        return _create_department_response(request)
 
 
 class PublicDepartmentListView(APIView):
@@ -120,7 +162,32 @@ class ClassSessionListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        sessions = ClassSession.objects.select_related("course", "lecturer")
+        sessions = ClassSession.objects.select_related(
+            "course", "course_offering", "lecturer"
+        )
+        if is_admin_user(request.user):
+            pass
+        elif request.user.role == User.Role.LECTURER:
+            if not is_authorized_academic_user(request.user):
+                sessions = sessions.none()
+            else:
+                sessions = sessions.filter(lecturer=request.user)
+        elif request.user.role == User.Role.STUDENT:
+            sessions = sessions.filter(
+                Q(
+                    course_offering__enrollments__student=request.user,
+                    course_offering__enrollments__is_active=True,
+                    course_offering__enrollments__status__iexact="active",
+                )
+                | Q(
+                    course_offering__isnull=True,
+                    course__enrollments__student=request.user,
+                    course__enrollments__is_active=True,
+                    course__enrollments__status__iexact="active",
+                )
+            ).distinct()
+        else:
+            sessions = sessions.none()
         return _success_response(ClassSessionSerializer(sessions, many=True).data)
 
 
@@ -139,13 +206,9 @@ class SchoolYearListCreateView(APIView):
             )
         serializer = SchoolYearSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        year = SchoolYear.objects.create(**serializer.validated_data)
-        write_audit_entry(
-            action="school_year_created",
-            resource_type="school_year",
-            resource_id=year.id,
-            actor_id=request.user.id,
-            new_value=SchoolYearSerializer(year).data,
+        year = create_school_year(
+            actor=request.user,
+            data=serializer.validated_data,
         )
         return _success_response(SchoolYearSerializer(year).data, 201)
 
@@ -218,8 +281,14 @@ def _offering_queryset_for(user):
     if is_admin_user(user):
         return rows
     if user.role == User.Role.LECTURER:
+        if not is_authorized_academic_user(user):
+            return rows.none()
         return rows.filter(lecturer=user)
-    return rows.filter(enrollments__student=user, enrollments__is_active=True).distinct()
+    if user.role == User.Role.STUDENT:
+        return rows.filter(
+            enrollments__student=user, enrollments__is_active=True
+        ).distinct()
+    return rows.none()
 
 
 class CourseOfferingListCreateView(APIView):
@@ -235,13 +304,9 @@ class CourseOfferingListCreateView(APIView):
             return _error_response("FORBIDDEN", "Only administrators create offerings.", 403)
         serializer = CourseOfferingSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        offering = serializer.save()
-        write_audit_entry(
-            action="course_offering_created",
-            resource_type="course_offering",
-            resource_id=offering.id,
-            actor_id=request.user.id,
-            details={"course_id": str(offering.course_id), "semester_id": str(offering.semester_id)},
+        offering = create_course_offering(
+            actor=request.user,
+            data=serializer.validated_data,
         )
         return _success_response(CourseOfferingSerializer(offering).data, 201)
 
@@ -266,13 +331,10 @@ class CourseOfferingDetailView(APIView):
             return _error_response("NOT_FOUND", "Course offering not found.", 404)
         serializer = CourseOfferingSerializer(offering, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        write_audit_entry(
-            action="course_offering_updated",
-            resource_type="course_offering",
-            resource_id=offering.id,
-            actor_id=request.user.id,
-            details={"changed_fields": sorted(serializer.validated_data)},
+        offering = update_course_offering(
+            actor=request.user,
+            offering=offering,
+            changes=serializer.validated_data,
         )
         return _success_response(CourseOfferingSerializer(offering).data)
 
@@ -300,7 +362,7 @@ class StudentAvailableCoursesView(APIView):
 
     def get(self, request):
         try:
-            semester, offerings = eligible_offerings(request.user)
+            semester, offerings, scope = eligible_offerings(request.user)
         except RegistrationError as exc:
             return _registration_error(exc)
         enrolled_ids = set(Enrollment.objects.filter(
@@ -311,8 +373,10 @@ class StudentAvailableCoursesView(APIView):
         return _success_response({
             "semester": semester.name,
             "registration_deadline": semester.registration_deadline,
-            "level": request.user.level,
-            "department": request.user.department.name,
+            # Displayed scope comes from the same administrator-owned profile
+            # that gates enrollment, never from a value the student posted.
+            "level": scope.level,
+            "department": scope.department.name,
             "courses": [_offering_summary(row, enrolled_ids) for row in offerings],
         })
 
@@ -370,8 +434,13 @@ class LecturerMyCoursesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if request.user.role != User.Role.LECTURER:
-            return _error_response("FORBIDDEN", "Only lecturers can access this endpoint.", 403)
+        if (
+            request.user.role != User.Role.LECTURER
+            or not is_authorized_academic_user(request.user)
+        ):
+            return _error_response(
+                "FORBIDDEN", "Only approved lecturers can access this endpoint.", 403
+            )
         rows = CourseOffering.objects.filter(lecturer=request.user).select_related(
             "course", "department", "semester", "lecturer"
         )
@@ -471,15 +540,6 @@ class EnrollmentListCreateView(APIView):
                 return _error_response("NOT_FOUND", str(exc), 404)
             return _error_response("UNAUTHORIZED", str(exc), 403)
 
-        # BR-210: enrollment changes a student's eligibility for future
-        # attendance, so it is a significant academic action.
-        write_audit_entry(
-            action="course_enrolled",
-            resource_type="enrollment",
-            resource_id=record.id,
-            actor_id=request.user.id,
-            details={"course_id": str(course_id), "student_id": str(student_id)},
-        )
         return _success_response(
             {"id": str(record.id), "course": str(course_id), "is_active": record.is_active},
             201,
@@ -527,13 +587,173 @@ class EnrollmentDropView(APIView):
                 return _error_response("NOT_FOUND", str(exc), 404)
             return _error_response("UNAUTHORIZED", str(exc), 403)
 
-        write_audit_entry(
-            action="course_dropped",
-            resource_type="enrollment",
-            resource_id=record.id,
-            actor_id=request.user.id,
-            details={"course_id": str(course_id), "student_id": str(student_id)},
-        )
         return _success_response(
             {"id": str(record.id), "course": str(course_id), "is_active": record.is_active}
         )
+
+
+class DepartmentCreateView(APIView):
+    """Compatibility alias for the frontend's explicit create route."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        return _create_department_response(request)
+
+
+class AdminStatisticsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not is_admin_user(request.user):
+            return _error_response(
+                "FORBIDDEN", "Only administrators may view platform statistics.", 403
+            )
+        active_semester = Semester.objects.filter(is_current=True).select_related(
+            "school_year"
+        ).first()
+        current_offerings = CourseOffering.objects.none()
+        if active_semester is not None:
+            current_offerings = CourseOffering.objects.filter(
+                semester=active_semester
+            )
+        authorized_lecturers = sum(
+            1
+            for lecturer in User.objects.filter(role=User.Role.LECTURER).iterator()
+            if is_authorized_academic_user(lecturer)
+        )
+        return _success_response(
+            {
+                "total_students": User.objects.filter(
+                    role=User.Role.STUDENT
+                ).count(),
+                "total_lecturers": authorized_lecturers,
+                "total_courses": Course.objects.count(),
+                "total_departments": Department.objects.count(),
+                "total_offerings": current_offerings.count(),
+                "total_enrollments": Enrollment.objects.filter(
+                    course_offering__in=current_offerings,
+                    is_active=True,
+                ).count(),
+                "active_semester": (
+                    SemesterSerializer(active_semester).data
+                    if active_semester is not None
+                    else None
+                ),
+            }
+        )
+
+
+class CourseOfferingScheduleListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _offering(self, request, offering_id):
+        return _offering_queryset_for(request.user).filter(pk=offering_id).first()
+
+    def get(self, request, offering_id):
+        offering = self._offering(request, offering_id)
+        if offering is None:
+            return _error_response("NOT_FOUND", "Course offering not found.", 404)
+        # The timetable surface shows weekly *slots*. A class definition that
+        # has not been scheduled yet has no slot to render (and would put a
+        # null day in front of the timetable component), so it is listed by
+        # GET /course-offerings/{id}/classes/ instead rather than appearing
+        # here as a half-formed row.
+        schedules = ClassSchedule.objects.filter(
+            course_offering=offering,
+            is_active=True,
+            day_of_week__isnull=False,
+            start_time__isnull=False,
+            end_time__isnull=False,
+        ).select_related("course_offering__course", "lecturer")
+        return _success_response(ClassScheduleSerializer(schedules, many=True).data)
+
+    def post(self, request, offering_id):
+        offering = self._offering(request, offering_id)
+        if offering is None:
+            return _error_response("NOT_FOUND", "Course offering not found.", 404)
+        serializer = ClassScheduleCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            schedule = create_class_schedule(
+                actor=request.user,
+                offering=offering,
+                data=serializer.validated_data,
+            )
+        except AcademicStructureAuthorizationError as exc:
+            return _error_response("FORBIDDEN", str(exc), 403)
+        except AcademicStructureConflictError as exc:
+            return _error_response("CONFLICT", str(exc), 409)
+        except AcademicStructureError as exc:
+            return _error_response("INVALID_INPUT", str(exc), 400)
+        return _success_response(ClassScheduleSerializer(schedule).data, 201)
+
+
+class CourseOfferingClassListCreateView(APIView):
+    """``GET``/``POST`` on one offering's class definitions (API §22).
+
+    Accepted project decision A. ``POST`` creates an academic class
+    definition that belongs to an existing, caller-scoped course offering; it
+    never creates a course, an offering, an enrollment row or a second student
+    workspace. The offering comes from the URL and is resolved through
+    :func:`_offering_queryset_for`, so a caller cannot aim this at an offering
+    they do not own — an unrelated or unapproved lecturer gets the same 404 an
+    unknown id produces, and the service re-checks scope server-side anyway.
+
+    ``GET`` preserves whatever the offering's consumers need: it answers with
+    class definitions (their own ids), never with substituted offering ids.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _offering(self, request, offering_id):
+        return _offering_queryset_for(request.user).filter(pk=offering_id).first()
+
+    def get(self, request, offering_id):
+        offering = self._offering(request, offering_id)
+        if offering is None:
+            return _error_response("NOT_FOUND", "Course offering not found.", 404)
+        classes = ClassSchedule.objects.filter(
+            course_offering=offering, is_active=True
+        ).select_related("course_offering__course", "lecturer")
+        return _success_response(ClassDefinitionSerializer(classes, many=True).data)
+
+    def post(self, request, offering_id):
+        offering = self._offering(request, offering_id)
+        if offering is None:
+            return _error_response("NOT_FOUND", "Course offering not found.", 404)
+        serializer = ClassDefinitionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            class_definition = create_class_definition(
+                actor=request.user,
+                offering=offering,
+                data=serializer.validated_data,
+            )
+        except AcademicStructureAuthorizationError as exc:
+            return _error_response("FORBIDDEN", str(exc), 403)
+        except AcademicStructureConflictError as exc:
+            return _error_response("CONFLICT", str(exc), 409)
+        except AcademicStructureError as exc:
+            return _error_response("INVALID_INPUT", str(exc), 400)
+        return _success_response(ClassDefinitionSerializer(class_definition).data, 201)
+
+
+class ClassScheduleDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        schedule = ClassSchedule.objects.filter(
+            pk=pk,
+            is_active=True,
+            course_offering__in=_offering_queryset_for(request.user),
+        ).select_related("course_offering__lecturer").first()
+        if schedule is None:
+            return _error_response("NOT_FOUND", "Class schedule not found.", 404)
+        try:
+            archive_class_schedule(actor=request.user, schedule=schedule)
+        except AcademicStructureAuthorizationError as exc:
+            return _error_response("FORBIDDEN", str(exc), 403)
+        except AcademicStructureError:
+            return _error_response("NOT_FOUND", "Class schedule not found.", 404)
+        return _success_response({"id": str(schedule.pk), "is_active": False})

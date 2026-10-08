@@ -1,23 +1,26 @@
-"""QR token mechanics tests — specifically the backend-independent contract.
+"""QR token mechanics tests — the backend-independent contract.
 
-The defect these guard against
------------------------------
-``consume_token`` used to report failure differently depending on the cache
-backend:
+Why validation does not consume
+-------------------------------
+``consume_token`` used to burn a code after the first scan so replay could be
+detected.  That contract is incompatible with the MVP's shared-QR mandate: one
+projected code (or one station's code) must keep working for every student who
+scans it inside its 10-second TTL, so the class behind the first scanner is
+never locked out.
 
-* LocMem kept a process-global ``_LOCAL_USED_KEYS`` set, so it could tell an
-  expired token from a replayed one -- expired raised ``TokenExpiredError``.
-* Redis cannot: ``GET``+``DEL`` returns nil for both, so it raised
-  ``TokenAlreadyUsedError`` for everything.
+Replay is therefore solved by the layers *around* the token:
 
-The view maps those to 404 and 409 respectively, so **the same expired QR code
-returned a different HTTP status depending on the deployment's cache**. Tests
-run under LocMem and production runs under Redis, so the suite was verifying a
-code path production never took.
+* the token lives only ``QR_TOKEN_TTL_SECONDS`` (10s) and is re-issued
+  continuously by whoever displays it,
+* it is bound to one session (and, for a station, one scan point),
+* every scan is credited to the authenticated scanner and no one else, and
+* the database's UNIQUE(session, student) constraint makes a second credit for
+  the same student impossible (``attendance_service.AlreadyMarkedError``).
 
-``consume_token`` now writes a TTL tombstone on consumption, so both backends
-separate "expired" (404) from "already used" (409). These tests pin that
-contract at the mechanics layer, where it is unambiguous.
+So this module *validates*; ``attendance_service`` deduplicates.  These tests
+pin the mechanics-layer half of that contract: a live token reads identically
+forever inside its TTL, and an absent one always reads as expired — never as
+"already used", a distinction that no longer exists.
 """
 
 from django.core.cache import cache
@@ -25,84 +28,116 @@ from django.test import SimpleTestCase
 
 from apps.attendance.utils import qr_tokens
 from apps.attendance.utils.qr_tokens import (
-    TokenAlreadyUsedError,
+    InvalidTokenError,
     TokenExpiredError,
-    consume_token,
     generate_token,
+    get_qr_token_ttl_seconds,
+    validate_token,
 )
 
 
-class QrTokenConsumptionContractTests(SimpleTestCase):
+def _store(token, value):
+    """Write through the same store ``generate_token`` uses.
+
+    Under Redis the module writes with the raw client (no Django key
+    versioning), so a test that pokes ``cache.set`` would be editing a
+    *different* key and would silently pass/fail for the wrong reason.
+    """
+    client = qr_tokens._redis_client()
+    if client is not None:
+        client.set(qr_tokens._key(token), value, ex=10)
+    else:
+        cache.set(qr_tokens._key(token), value, timeout=10)
+
+
+def _forget(token):
+    """Expire a token exactly as the TTL would."""
+    client = qr_tokens._redis_client()
+    if client is not None:
+        client.delete(qr_tokens._key(token))
+    else:
+        cache.delete(qr_tokens._key(token))
+
+
+class QrTokenValidationContractTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
         self.checkpoint_id = "11111111-1111-1111-1111-111111111111"
         self.session_id = "22222222-2222-2222-2222-222222222222"
 
-    def _issue(self):
+    def _issue(self, **kwargs):
         token = generate_token(
-            checkpoint_id=self.checkpoint_id, session_id=self.session_id
+            session_id=kwargs.get("session_id", self.session_id),
+            checkpoint_id=kwargs.get("checkpoint_id", self.checkpoint_id),
         )
         self.assertTrue(token)
         return token
 
-    def test_fresh_token_consumes_and_returns_its_binding(self):
+    def test_token_ttl_is_the_ten_second_brit035_default(self):
+        self.assertEqual(get_qr_token_ttl_seconds(), 10)
+
+    def test_station_token_binds_session_checkpoint_and_scope(self):
         token = self._issue()
-        payload = consume_token(token)
+        payload = validate_token(token)
         self.assertEqual(payload["checkpoint_id"], self.checkpoint_id)
         self.assertEqual(payload["session_id"], self.session_id)
+        self.assertEqual(payload["scope"], "STATION")
 
-    def test_replayed_token_raises_already_used(self):
-        """BR-038: once consumed, never valid again."""
+    def test_projected_token_binds_session_and_scope_only(self):
+        token = self._issue(checkpoint_id=None)
+        payload = validate_token(token)
+        self.assertEqual(payload["session_id"], self.session_id)
+        self.assertNotIn("checkpoint_id", payload)
+        self.assertEqual(payload["scope"], "PROJECTOR")
+
+    def test_scope_is_derived_server_side_not_from_the_caller(self):
+        """No argument can turn a projected issuance into a station token."""
+        token = self._issue(checkpoint_id=None)
+        payload = validate_token(token)
+        # The caller cannot smuggle a checkpoint binding into the payload.
+        self.assertEqual(payload["scope"], "PROJECTOR")
+
+    def test_validation_does_not_consume_the_shared_code(self):
+        """BR-039: the class behind the first scanner must still get through."""
         token = self._issue()
-        consume_token(token)
-        with self.assertRaises(TokenAlreadyUsedError):
-            consume_token(token)
+        first = validate_token(token)
+        second = validate_token(token)
+        third = validate_token(token)
+        self.assertEqual(first, second)
+        self.assertEqual(second, third)
 
-    def test_expired_token_raises_expired_not_already_used(self):
-        """The distinction that used to vanish on Redis.
+    def test_validating_one_token_does_not_affect_another(self):
+        first = self._issue()
+        second = self._issue(session_id="33333333-3333-3333-3333-333333333333")
+        validate_token(first)
+        payload = validate_token(second)
+        self.assertNotEqual(payload["session_id"], self.session_id)
 
-        Simulates TTL expiry by deleting the live key without leaving a
-        tombstone -- exactly what Redis does when the key ages out. The result
-        must be ``TokenExpiredError`` so the view returns 404, not 409.
-        """
+    def test_expired_token_raises_expired(self):
+        """The only terminal failure this layer reports (mapped to 404)."""
         token = self._issue()
-        cache.delete(qr_tokens._key(token))
+        _forget(token)
         with self.assertRaises(TokenExpiredError):
-            consume_token(token)
+            validate_token(token)
 
     def test_never_issued_token_raises_expired(self):
-        """A token that never existed is expired, never "already used"."""
         with self.assertRaises(TokenExpiredError):
-            consume_token("this-token-was-never-issued")
+            validate_token("this-token-was-never-issued")
 
     def test_empty_and_non_string_tokens_raise_expired(self):
         for bad in ("", None, 12345, []):
             with self.subTest(token=bad):
                 with self.assertRaises(TokenExpiredError):
-                    consume_token(bad)
+                    validate_token(bad)
 
-    def test_consuming_one_token_does_not_affect_another(self):
-        """No cross-contamination between concurrently live checkpoints."""
-        first = self._issue()
-        second = self._issue()
-        consume_token(first)
-        # second is untouched and still consumable
-        payload = consume_token(second)
-        self.assertEqual(payload["checkpoint_id"], self.checkpoint_id)
-
-    def test_used_tombstone_expires_so_the_store_stays_bounded(self):
-        """The tombstone must be TTL'd, not an unbounded process-global set."""
+    def test_unreadable_cached_payload_raises_invalid_not_expired(self):
+        """A corrupted store is a different failure from a lapsed TTL."""
         token = self._issue()
-        consume_token(token)
-        tombstone = qr_tokens._used_key(token)
-        self.assertTrue(cache.get(tombstone))
-        # Simulate the TTL elapsing.
-        cache.delete(tombstone)
-        # With both the live key and the tombstone gone, the token reads as
-        # expired -- the correct terminal state, and the store no longer
-        # carries anything for it.
-        with self.assertRaises(TokenExpiredError):
-            consume_token(token)
+        # Unparseable bytes in the live slot: reading it must be INVALID (404),
+        # never a claim that the code merely aged out.
+        _store(token, "{not-json")
+        with self.assertRaises(InvalidTokenError):
+            validate_token(token)
 
     def test_generated_tokens_are_unique_and_long(self):
         """256 bits of entropy via secrets; collisions are not acceptable."""

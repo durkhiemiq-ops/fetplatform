@@ -10,6 +10,10 @@ import uuid
 
 from django.db import models
 
+#: Upper bound on a contribution's ``notes`` field, in characters. Shared with
+#: the project serializers so the model and the API agree on one limit.
+CONTRIBUTION_NOTES_MAX_LENGTH = 10000
+
 
 class Project(models.Model):
     class Status(models.TextChoices):
@@ -187,7 +191,11 @@ class ProjectContribution(models.Model):
     evidence_type = models.CharField(max_length=64)
     evidence_ref = models.CharField(max_length=512)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.PENDING_REVIEW)
-    notes = models.TextField(blank=True)
+    # Bounded: reviewer notes are plain text under output encoding (see the
+    # XSS gate in scripts/security_audit_checks.py), and this field is written
+    # by students, so it is capped to stop a single submission storing
+    # arbitrary volumes.
+    notes = models.TextField(blank=True, max_length=CONTRIBUTION_NOTES_MAX_LENGTH)
     created_by = models.ForeignKey(
         "accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
     )

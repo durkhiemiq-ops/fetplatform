@@ -26,6 +26,8 @@ from core.academic_access import (
     SCOPE_DEPARTMENT,
     SCOPE_FACULTY,
     InvalidScopeError,
+    is_admin_user,
+    is_authorized_academic_user,
     normalize_scope,
     user_has_scope_access,
 )
@@ -71,6 +73,7 @@ class AnnouncementModelLike(Protocol):
         ...
 
 
+@transaction.atomic
 def create_announcement(
     *,
     AnnouncementModel: type[AnnouncementModelLike],
@@ -274,6 +277,7 @@ def get_visible_announcements(
     return result
 
 
+@transaction.atomic
 def update_announcement(
     *,
     announcement: Any,
@@ -371,7 +375,13 @@ def can_manage_announcement(user, announcement) -> bool:
     return bool(
         user
         and announcement
-        and (user.role == "ADMINISTRATOR" or announcement.created_by_id == user.id)
+        and (
+            is_admin_user(user)
+            or (
+                is_authorized_academic_user(user)
+                and announcement.created_by_id == user.id
+            )
+        )
     )
 
 
@@ -451,6 +461,7 @@ def archive_announcement(*, announcement, actor):
     return announcement
 
 
+@transaction.atomic
 def mark_announcement_read(*, announcement, user, ReadModel):
     record, created = ReadModel.objects.get_or_create(announcement=announcement, user=user)
     if created:

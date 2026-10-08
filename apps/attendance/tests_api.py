@@ -8,6 +8,7 @@ every significant action is audited.
 
 from datetime import timedelta
 
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -16,11 +17,13 @@ from rest_framework.test import APIClient
 from apps.academic.models import ClassSession, Course, Enrollment
 from apps.accounts.models import User
 from apps.attendance.models import (
+    AttendanceCheckpoint,
     AttendanceCorrection,
     AttendanceRecord,
     AttendanceSession,
 )
 from apps.attendance.services.attendance_service import (
+    evaluate_repeated_failure,
     flag_suspicious_activity,
     generate_checkpoint_token,
     scan_attendance,
@@ -205,14 +208,20 @@ class AttendanceLifecycleApiTests(TestCase):
     # ---- Checkpoints + QR token issuance (the lecturer's generator) ---------
 
     def test_lecturer_selects_checkpoints_and_issues_a_qr_token(self):
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         select = self.auth(self.lecturer).post(
             reverse("attendance:session-checkpoints", args=[session_id]),
             {"student_ids": [str(self.student.id), str(self.other_student.id)]},
             format="json",
         )
         self.assertEqual(select.status_code, 201)
-        checkpoint_id = select.data["data"]["checkpoints"][0]["id"]
+        # The station under test belongs to other_student, so the scanner
+        # (self.student) is never relaying their own code.
+        checkpoint_id = next(
+            row["id"]
+            for row in select.data["data"]["checkpoints"]
+            if row["student"] == str(self.other_student.id)
+        )
 
         token = self.auth(self.lecturer).post(
             reverse("attendance:checkpoint-token", args=[checkpoint_id])
@@ -230,17 +239,16 @@ class AttendanceLifecycleApiTests(TestCase):
             format="json",
         )
         self.assertEqual(scan.status_code, 201)
-        self.assertTrue(
-            AttendanceRecord.objects.filter(
-                attendance_session_id=session_id, student=self.student
-            ).exists()
+        record = AttendanceRecord.objects.get(
+            attendance_session_id=session_id, student=self.student
         )
+        self.assertEqual(str(record.checkpoint_id), checkpoint_id)
 
     def test_checkpoint_selection_rejects_non_eligible_student(self):
         outsider = User.objects.create_user(
             "outsider@example.test", "outsider", "Out", "Sider", "StrongPass!2026"
         )
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         response = self.auth(self.lecturer).post(
             reverse("attendance:session-checkpoints", args=[session_id]),
             {"student_ids": [str(outsider.id)]},
@@ -249,8 +257,72 @@ class AttendanceLifecycleApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["error"]["code"], "CHECKPOINT_REJECTED")
 
+    def test_checkpoint_selection_is_atomic_and_audited(self):
+        outsider = User.objects.create_user(
+            "partial-outsider@example.test",
+            "partial-outsider",
+            "Out",
+            "Sider",
+            "StrongPass!2026",
+        )
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
+        selection_url = reverse("attendance:session-checkpoints", args=[session_id])
+
+        rejected = self.auth(self.lecturer).post(
+            selection_url,
+            {"student_ids": [str(self.student.id), str(outsider.id)]},
+            format="json",
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertFalse(
+            AttendanceCheckpoint.objects.filter(attendance_session_id=session_id).exists()
+        )
+
+        accepted = self.auth(self.lecturer).post(
+            selection_url,
+            {"student_ids": [str(self.student.id)]},
+            format="json",
+        )
+        self.assertEqual(accepted.status_code, 201)
+        checkpoint_id = accepted.data["data"]["checkpoints"][0]["id"]
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                action="attendance_checkpoints_selected",
+                resource_id=str(session_id),
+                actor_id=self.lecturer.id,
+            ).exists()
+        )
+
+        issued = self.auth(self.lecturer).post(
+            reverse("attendance:checkpoint-token", args=[checkpoint_id])
+        )
+        self.assertEqual(issued.status_code, 201)
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                action="attendance_token_issued",
+                resource_id=str(checkpoint_id),
+                actor_id=self.lecturer.id,
+            ).exists()
+        )
+
+    def test_repeated_scan_failures_raise_one_flag_per_window(self):
+        for _ in range(6):
+            evaluate_repeated_failure(
+                cache_backend=cache,
+                actor_id=self.student.id,
+                failure_code="INVALID_TOKEN",
+                request_ip="127.0.0.1",
+            )
+        self.assertEqual(
+            AuditEvent.objects.filter(
+                action="attendance_suspicious_activity",
+                actor_id=self.student.id,
+            ).count(),
+            1,
+        )
+
     def test_checkpoints_need_at_least_one_student(self):
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         response = self.auth(self.lecturer).post(
             reverse("attendance:session-checkpoints", args=[session_id]),
             {"student_ids": []},
@@ -259,7 +331,7 @@ class AttendanceLifecycleApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_non_owner_cannot_select_checkpoints_or_issue_tokens(self):
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         other = self.auth(self.other_lecturer)
         self.assertEqual(
             other.post(
@@ -287,7 +359,7 @@ class AttendanceLifecycleApiTests(TestCase):
         )
 
     def test_token_issuance_fails_on_closed_session(self):
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         checkpoint = select_checkpoints(
             lecturer=self.lecturer,
             session=AttendanceSession.objects.get(id=session_id),
@@ -303,11 +375,11 @@ class AttendanceLifecycleApiTests(TestCase):
     # ---- Records + corrections ----------------------------------------------
 
     def test_student_sees_own_records_only(self):
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         checkpoint = select_checkpoints(
             lecturer=self.lecturer,
             session=AttendanceSession.objects.get(id=session_id),
-            student_ids=[self.student.id],
+            student_ids=[self.other_student.id],
         )[0]
         scan_attendance(
             authenticated_student=self.student,
@@ -329,7 +401,7 @@ class AttendanceLifecycleApiTests(TestCase):
         self.assertEqual(len(theirs.data["data"]), 0)
 
     def test_lecturer_can_read_own_sessions_records(self):
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         scan_attendance(
             authenticated_student=self.student,
             token=generate_checkpoint_token(
@@ -337,7 +409,7 @@ class AttendanceLifecycleApiTests(TestCase):
                 checkpoint=select_checkpoints(
                     lecturer=self.lecturer,
                     session=AttendanceSession.objects.get(id=session_id),
-                    student_ids=[self.student.id],
+                    student_ids=[self.other_student.id],
                 )[0],
             ),
         )
@@ -353,11 +425,11 @@ class AttendanceLifecycleApiTests(TestCase):
         self.assertEqual(other.status_code, 404)
 
     def test_correction_is_traceable_and_owner_only(self):
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         checkpoint = select_checkpoints(
             lecturer=self.lecturer,
             session=AttendanceSession.objects.get(id=session_id),
-            student_ids=[self.student.id],
+            student_ids=[self.other_student.id],
         )[0]
         record = scan_attendance(
             authenticated_student=self.student,
@@ -429,11 +501,11 @@ class AttendanceLifecycleApiTests(TestCase):
     def test_admin_can_correct_any_records_record_and_it_is_audited(self):
         # BR-042: corrections are the record's session lecturer OR an
         # administrator; both require an audit reason.
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         checkpoint = select_checkpoints(
             lecturer=self.lecturer,
             session=AttendanceSession.objects.get(id=session_id),
-            student_ids=[self.student.id],
+            student_ids=[self.other_student.id],
         )[0]
         record = scan_attendance(
             authenticated_student=self.student,
@@ -475,7 +547,7 @@ class AttendanceLifecycleApiTests(TestCase):
 
     def test_response_payloads_are_trimmed_per_s67(self):
         """§67: no response returns fields the frontend does not consume."""
-        session_id = self.start_session(duration_seconds=30).data["data"]["id"]
+        session_id = self.start_session(duration_seconds=30, mode="STATIONS").data["data"]["id"]
         # Seed one checkpoint so the session detail has a row to inspect.
         self.auth(self.lecturer).post(
             reverse("attendance:session-checkpoints", args=[session_id]),
@@ -501,9 +573,11 @@ class AttendanceLifecycleApiTests(TestCase):
         self.assertNotIn("lecturer_name", detail.data["data"])
         checkpoint_row = detail.data["data"]["checkpoints"][0]
         self.assertEqual(
-            set(checkpoint_row.keys()), {"id", "student", "student_name", "marked"}
+            set(checkpoint_row.keys()),
+            {"id", "student", "student_name", "marked", "checkpoint_number", "source"},
         )
         self.assertNotIn("record", checkpoint_row)
+        self.assertNotIn("attendance_session", checkpoint_row)
 
         # Checkpoint selection: checkpoint rows carry no owning session uuid.
         select = self.auth(self.lecturer).post(
@@ -519,7 +593,7 @@ class AttendanceLifecycleApiTests(TestCase):
     # ---- BR-064 review surface ----------------------------------------------
 
     def test_review_flags_scoped_and_not_denials(self):
-        session_id = self.start_session().data["data"]["id"]
+        session_id = self.start_session(mode="STATIONS").data["data"]["id"]
         scan_attendance(
             authenticated_student=self.student,
             token=generate_checkpoint_token(
@@ -527,7 +601,7 @@ class AttendanceLifecycleApiTests(TestCase):
                 checkpoint=select_checkpoints(
                     lecturer=self.lecturer,
                     session=AttendanceSession.objects.get(id=session_id),
-                    student_ids=[self.student.id],
+                    student_ids=[self.other_student.id],
                 )[0],
             ),
         )

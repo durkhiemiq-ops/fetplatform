@@ -3,6 +3,7 @@ from rest_framework import serializers
 from apps.accounts.models import User
 
 from .models import (
+    CONTRIBUTION_NOTES_MAX_LENGTH,
     Project,
     ProjectContribution,
     ProjectGroup,
@@ -162,27 +163,39 @@ class MilestoneUpdateSerializer(serializers.Serializer):
         return attrs
 
 
+class StrictSerializer(serializers.Serializer):
+    """Reject unknown request fields instead of silently dropping them."""
+
+    def to_internal_value(self, data):
+        unexpected = set(data) - set(self.fields)
+        if unexpected:
+            raise serializers.ValidationError(
+                {field: "This field is not permitted." for field in unexpected}
+            )
+        return super().to_internal_value(data)
+
+
 # ===== input payloads =====
 
 
-class ProjectCreateSerializer(serializers.Serializer):
+class ProjectCreateSerializer(StrictSerializer):
     title = serializers.CharField(max_length=255)
 
 
-class ProjectStatusSerializer(serializers.Serializer):
+class ProjectStatusSerializer(StrictSerializer):
     status = serializers.ChoiceField(choices=[c.value for c in Project.Status])
 
 
-class GroupCreateSerializer(serializers.Serializer):
+class GroupCreateSerializer(StrictSerializer):
     name = serializers.CharField(max_length=150, allow_blank=True, default="")
 
 
-class MemberCreateSerializer(serializers.Serializer):
+class MemberCreateSerializer(StrictSerializer):
     student = serializers.PrimaryKeyRelatedField(queryset=User.objects.all())
     group = serializers.UUIDField(required=False, allow_null=True, default=None)
 
 
-class TaskCreateSerializer(serializers.Serializer):
+class TaskCreateSerializer(StrictSerializer):
     title = serializers.CharField(max_length=255)
     status = serializers.ChoiceField(
         choices=[c.value for c in ProjectTask.Status], default="todo", required=False
@@ -202,17 +215,22 @@ class TaskCreateSerializer(serializers.Serializer):
     # by another project" so this endpoint is not a group-id oracle.
 
 
-class TaskStatusSerializer(serializers.Serializer):
+class TaskStatusSerializer(StrictSerializer):
     status = serializers.ChoiceField(choices=[c.value for c in ProjectTask.Status])
 
 
-class ContributionCreateSerializer(serializers.Serializer):
+class ContributionCreateSerializer(StrictSerializer):
     """Only activity-linked evidence qualifies (BR-120/121 — no freeform claims)."""
 
     evidence_type = serializers.ChoiceField(choices=["task"])
     evidence_ref = serializers.CharField(max_length=512)
 
 
-class ContributionReviewSerializer(serializers.Serializer):
+class ContributionReviewSerializer(StrictSerializer):
     approved = serializers.BooleanField()
-    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=CONTRIBUTION_NOTES_MAX_LENGTH,
+    )

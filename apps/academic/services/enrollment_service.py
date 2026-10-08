@@ -19,7 +19,9 @@ from __future__ import annotations
 from typing import Any, Optional, Protocol
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 
+from core.audit import write_audit_entry
 from core.common import ConfigurationError, get_attr, utc_now
 from apps.notifications.services.notification_service import notify_student_enrolled
 
@@ -134,6 +136,26 @@ def is_student_enrolled_in_course(
     return _is_active_enrollment(record)
 
 
+def is_student_enrolled_in_offering(
+    student_id: Any,
+    course_offering_id: Any,
+    *,
+    EnrollmentModel: type[EnrollmentModelLike],
+) -> bool:
+    """Return whether the student has an active enrollment in one offering."""
+    if EnrollmentModel is None:
+        raise ConfigurationError("EnrollmentModel is required")
+    queryset = EnrollmentModel.objects.filter(
+        student_id=student_id,
+        course_offering_id=course_offering_id,
+    )
+    if hasattr(queryset, "order_by"):
+        record = queryset.order_by("-updated_at", "-id").first()
+    else:
+        record = queryset[0] if queryset else None
+    return _is_active_enrollment(record)
+
+
 def get_course_enrollment(
     student_id: Any,
     course_id: Any,
@@ -152,6 +174,7 @@ def get_course_enrollment(
     return queryset[0] if queryset else None
 
 
+@transaction.atomic
 def enroll_student_in_course(
     student_id: Any,
     course_id: Any,
@@ -230,6 +253,13 @@ def enroll_student_in_course(
         record.dropped_at = None
 
     record.save()
+    write_audit_entry(
+        action="course_enrolled",
+        resource_type="enrollment",
+        resource_id=record.id,
+        actor_id=actor_id,
+        details={"course_id": str(course_id), "student_id": str(student_id)},
+    )
     # BR §23 + API §45: the enrolled student is the only eligible recipient of
     # their own enrollment event (fires on create *and* on reactivation, which
     # is a genuine enroll action per BR-010/BR-013).
@@ -237,6 +267,7 @@ def enroll_student_in_course(
     return record
 
 
+@transaction.atomic
 def drop_student_from_course(
     student_id: Any,
     course_id: Any,
@@ -284,6 +315,13 @@ def drop_student_from_course(
         record.deleted_at = None
 
     record.save()
+    write_audit_entry(
+        action="course_dropped",
+        resource_type="enrollment",
+        resource_id=record.id,
+        actor_id=actor_id,
+        details={"course_id": str(course_id), "student_id": str(student_id)},
+    )
     return record
 
 
@@ -292,6 +330,7 @@ def get_enrolled_students(
     *,
     EnrollmentModel: type[EnrollmentModelLike],
     active_only: bool = True,
+    course_offering_id: Optional[Any] = None,
 ) -> list[Any]:
     """Return active or all students for a given course.
 
@@ -304,6 +343,8 @@ def get_enrolled_students(
         raise ConfigurationError("EnrollmentModel is required")
 
     queryset = EnrollmentModel.objects.filter(course_id=course_id)
+    if course_offering_id is not None:
+        queryset = queryset.filter(course_offering_id=course_offering_id)
     if active_only:
         rows = []
         for record in queryset:

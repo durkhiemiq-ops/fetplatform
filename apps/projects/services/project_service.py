@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol
 
+from django.db import transaction
+
 from core.common import ConfigurationError, utc_now
 from core.audit import write_audit_entry
 
@@ -165,6 +167,7 @@ def _default_task_authorized(actor_id: Any, task: Any) -> bool:
     ) == actor_id
 
 
+@transaction.atomic
 def create_project(
     *,
     ProjectModel: type[ProjectLike],
@@ -247,6 +250,46 @@ def _assert_group_in_project(
         raise error("Group does not belong to this project")
 
 
+
+@transaction.atomic
+def create_project_group(
+    *,
+    GroupModel: type[ProjectGroupLike],
+    project: Any,
+    name: str,
+    actor_id: Any,
+    actor_authorizer: Optional[Any] = None,
+) -> ProjectGroupLike:
+    """Create a group only while its project is mutable and the actor manages it."""
+    if GroupModel is None:
+        raise ConfigurationError("GroupModel is required")
+    _assert_project_modifiable(project, actor_id)
+    if actor_authorizer is None or not bool(
+        actor_authorizer(actor_id=actor_id, project=project)
+    ):
+        raise UnauthorizedProjectActionError(
+            "Actor is not authorized to manage project groups"
+        )
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ProjectError("Project group name is required")
+
+    group = GroupModel()
+    group.project_id = project.id
+    group.name = clean_name
+    if hasattr(group, "created_by_id"):
+        group.created_by_id = actor_id
+    group.save()
+    write_audit_entry(
+        action="project_group_created",
+        resource_type="project_group",
+        resource_id=getattr(group, "id", None),
+        actor_id=actor_id,
+        details={"project_id": project.id, "name": clean_name},
+    )
+    return group
+
+@transaction.atomic
 def add_project_member(
     *,
     ProjectModel: type[ProjectLike],
@@ -318,6 +361,7 @@ def add_project_member(
     return record
 
 
+@transaction.atomic
 def remove_project_member(
     *, membership: Any, actor_id: Any, actor_authorizer: Any
 ) -> None:
@@ -348,6 +392,7 @@ def remove_project_member(
     )
 
 
+@transaction.atomic
 def assign_group_leader(
     *,
     GroupModel: type[ProjectGroupLike],
@@ -385,9 +430,20 @@ def assign_group_leader(
         group.updated_by_id = actor_id
     if hasattr(group, "save"):
         group.save()
+    write_audit_entry(
+        action="project_group_leader_assigned",
+        resource_type="project_group",
+        resource_id=getattr(group, "id", None),
+        actor_id=actor_id,
+        details={
+            "project_id": getattr(group, "project_id", project_id),
+            "student_id": student_id,
+        },
+    )
     return group
 
 
+@transaction.atomic
 def advance_project_status(
     *,
     project: Any,
@@ -429,6 +485,7 @@ def advance_project_status(
     return project
 
 
+@transaction.atomic
 def create_task(
     *,
     ProjectModel: type[ProjectLike],
@@ -506,6 +563,7 @@ def create_task(
     return task
 
 
+@transaction.atomic
 def update_task_status(
     *,
     task: Any,
@@ -572,6 +630,7 @@ def _require_project_participant(
         raise ProjectMembershipError("Student is not an authorized project participant")
 
 
+@transaction.atomic
 def record_contribution(
     *,
     ContributionModel: type[Any],
@@ -646,6 +705,7 @@ def record_contribution(
     return contribution
 
 
+@transaction.atomic
 def review_contribution(
     *,
     contribution: Any,
@@ -709,6 +769,7 @@ def _participant_can_manage(project_id: Any, actor_id: Any, *, participant_looku
         return bool(participant_lookup(project_id, actor_id))
 
 
+@transaction.atomic
 def create_milestone(
     *,
     ProjectModel: type[ProjectLike],
@@ -763,6 +824,7 @@ def create_milestone(
     return milestone
 
 
+@transaction.atomic
 def update_milestone(
     *,
     milestone: Any,
@@ -814,6 +876,7 @@ def update_milestone(
     return milestone
 
 
+@transaction.atomic
 def delete_milestone(
     *,
     milestone: Any,
@@ -850,6 +913,7 @@ def delete_milestone(
     )
 
 
+@transaction.atomic
 def archive_project(
     *,
     project: Any,

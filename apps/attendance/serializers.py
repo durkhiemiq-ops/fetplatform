@@ -1,5 +1,11 @@
 from rest_framework import serializers
 
+from .models import AttendanceSession
+
+#: Which QR contract a session honours. Stored server-side at start; a client
+#: can request a mode but can never change it afterwards.
+MODE_CHOICES = [choice for choice, _ in AttendanceSession.Mode.choices]
+
 
 class AttendanceScanSerializer(serializers.Serializer):
     # Deliberately no student_id field: identity is request.user only (BR-039/063).
@@ -19,9 +25,10 @@ class AttendanceSessionCreateSerializer(serializers.Serializer):
     # BR-036: default duration comes from settings; the lecturer may pick a
     # window inside the service-enforced band (10-600 seconds).
     duration_seconds = serializers.IntegerField(min_value=10, max_value=600, required=False)
+    mode = serializers.ChoiceField(choices=MODE_CHOICES, required=False)
 
     def validate(self, attrs):
-        unexpected = set(self.initial_data) - {"class_session", "duration_seconds"}
+        unexpected = set(self.initial_data) - {"class_session", "duration_seconds", "mode"}
         if unexpected:
             raise serializers.ValidationError(
                 {field: "This field is not permitted." for field in unexpected}
@@ -65,9 +72,24 @@ class CorrectionCreateSerializer(serializers.Serializer):
 class FlexibleAttendanceStartSerializer(serializers.Serializer):
     offering_id = serializers.UUIDField()
     duration_seconds = serializers.IntegerField(min_value=10, max_value=600, required=False)
+    mode = serializers.ChoiceField(choices=MODE_CHOICES, required=False)
 
     def validate(self, attrs):
-        unexpected = set(self.initial_data) - {"offering_id", "duration_seconds"}
+        unexpected = set(self.initial_data) - {"offering_id", "duration_seconds", "mode"}
+        if unexpected:
+            raise serializers.ValidationError(
+                {field: "This field is not permitted." for field in unexpected}
+            )
+        return attrs
+
+
+class AutoSelectStationsSerializer(serializers.Serializer):
+    """How many eligible students to seed when the lecturer does not pick."""
+
+    count = serializers.IntegerField(min_value=1, max_value=20, required=False, default=3)
+
+    def validate(self, attrs):
+        unexpected = set(self.initial_data) - {"count"}
         if unexpected:
             raise serializers.ValidationError(
                 {field: "This field is not permitted." for field in unexpected}

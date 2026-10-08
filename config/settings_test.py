@@ -47,6 +47,14 @@ CACHES = {
     }
 }
 
+# --- Test-only guarantee: a local OTP cache is allowed here ---------------
+# Django's test runner forces ``settings.DEBUG = False`` for every run, so
+# ``email_otp._redis_client()`` cannot use DEBUG to tell this hermetic gate
+# from a misconfigured production cache.  This flag is the explicit opt-in
+# that keeps LocMem valid under ``config.settings_test`` and only there;
+# running with ``config.settings`` keeps the production refusal intact.
+EMAIL_OTP_ALLOW_LOCAL_CACHE = True
+
 # --- Pinned: database ------------------------------------------------------
 # SQLite for the run. ``:memory:`` keeps each test run isolated from
 # backend/dev.sqlite3 and from any other process on the machine.

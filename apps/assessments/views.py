@@ -12,6 +12,7 @@ from rest_framework.views import APIView
 from django.db.models import Q
 
 from core.academic_access import is_admin_user, is_authorized_academic_user
+from core.permissions import IsApprovedAcademicUser
 
 from .models import Assessment
 from .serializers import (
@@ -42,6 +43,8 @@ def _success(data, http_status=200):
 def _manageable_assessments(user):
     """Records within the caller's server-assigned academic responsibility."""
     queryset = Assessment.objects.all()
+    if not is_authorized_academic_user(user):
+        return queryset.none()
     if is_admin_user(user):
         return queryset
     if getattr(user, "role", None) != "LECTURER":
@@ -55,6 +58,8 @@ def _manageable_assessments(user):
 
 
 def _lecturer_manages_context(user, *, course=None, class_session=None):
+    if not is_authorized_academic_user(user):
+        return False
     if is_admin_user(user):
         return True
     if getattr(user, "role", None) != "LECTURER":
@@ -73,6 +78,12 @@ def _lecturer_manages_context(user, *, course=None, class_session=None):
 
 class AssessmentListCreateView(APIView):
     permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        permission_classes = (
+            [IsApprovedAcademicUser] if self.request.method == "POST" else self.permission_classes
+        )
+        return [permission() for permission in permission_classes]
 
     def get(self, request):
         is_academic = is_authorized_academic_user(request.user)
@@ -117,7 +128,7 @@ class AssessmentListCreateView(APIView):
 
 
 class AssessmentUpdateView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsApprovedAcademicUser]
 
     def patch(self, request, pk):
         assessment = _manageable_assessments(request.user).filter(pk=pk).first()

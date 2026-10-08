@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Protocol
 
+from django.db import transaction
+
 from core.academic_access import is_authorized_academic_user
 from core.audit import write_audit_entry
 from core.common import ConfigurationError, utc_now
@@ -91,6 +93,7 @@ def _audit(
     )
 
 
+@transaction.atomic
 def create_assessment(
     *,
     AssessmentModel: type[AssessmentRecordLike],
@@ -155,6 +158,7 @@ def create_assessment(
     return assessment
 
 
+@transaction.atomic
 def update_assessment(
     *,
     assessment: Any,

@@ -66,6 +66,16 @@ class ProjectApiTests(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data["error"]["code"], "UNAUTHORIZED")
 
+    def test_project_inputs_reject_unknown_fields(self):
+        self.client.force_authenticate(user=self.lecturer)
+        response = self.client.post(
+            reverse("projects:list"),
+            {"title": "Looks valid", "role": "ADMINISTRATOR"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Project.objects.filter(title="Looks valid").exists())
+
     def test_lecturer_creates_draft_project(self):
         self.client.force_authenticate(user=self.lecturer)
         response = self.client.post(
@@ -77,6 +87,28 @@ class ProjectApiTests(TestCase):
         self.assertEqual(data["status"], "draft")
         self.assertFalse(data["is_active"])
         self.assertEqual(str(data["owner"]), str(self.lecturer.id))
+
+    def test_group_creation_is_audited_and_archived_projects_are_read_only(self):
+        url = reverse("projects:group-create", args=[self.project.pk])
+        self.client.force_authenticate(user=self.lecturer)
+
+        created = self.client.post(url, {"name": "Core Team"}, format="json")
+        self.assertEqual(created.status_code, 201)
+        group_id = created.data["data"]["id"]
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                action="project_group_created",
+                resource_id=str(group_id),
+                actor_id=self.lecturer.id,
+            ).exists()
+        )
+
+        self.project.status = Project.Status.ARCHIVED
+        self.project.save(update_fields=["status"])
+        rejected = self.client.post(url, {"name": "Late Team"}, format="json")
+        self.assertEqual(rejected.status_code, 403)
+        self.assertEqual(rejected.data["error"]["code"], "UNAUTHORIZED")
+        self.assertEqual(ProjectGroup.objects.filter(project=self.project).count(), 1)
 
     def test_lifecycle_transitions_and_archive_audit(self):
         detail = reverse("projects:detail", args=[self.project.pk])
@@ -127,6 +159,22 @@ class ProjectApiTests(TestCase):
         denied = self.client.post(url, {"student": str(self.student.id)}, format="json")
         self.assertEqual(denied.status_code, 404)
         self.assertEqual(denied.data["error"]["code"], "NOT_FOUND")
+
+    def test_candidate_list_is_minimal_paginated_and_searchable(self):
+        self.client.force_authenticate(user=self.lecturer)
+        response = self.client.get(
+            reverse("projects:candidates", args=[self.project.pk]),
+            {"search": "proj-", "page_size": 1},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["data"]), 1)
+        self.assertGreaterEqual(response.data["pagination"]["total"], 2)
+        self.assertEqual(response.data["pagination"]["page_size"], 1)
+        self.assertEqual(
+            set(response.data["data"][0]),
+            {"id", "first_name", "last_name", "username"},
+        )
 
     def test_task_creation_and_status_rules(self):
         self._add_member()

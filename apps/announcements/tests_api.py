@@ -170,6 +170,24 @@ class AnnouncementApiTests(TestCase):
             ).exists()
         )
 
+    def test_announcement_update_rejects_unknown_fields(self):
+        target = Announcement.objects.create(
+            title="Strict update",
+            body="b",
+            scope="faculty",
+            faculty=self.faculty,
+            created_by=self.lecturer,
+        )
+        self.client.force_authenticate(user=self.lecturer)
+        response = self.client.patch(
+            reverse("announcements:detail", args=[target.pk]),
+            {"created_by": str(self.foreign_lecturer.id)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        target.refresh_from_db()
+        self.assertEqual(target.created_by, self.lecturer)
+
     def test_visible_student_marks_read_idempotently(self):
         target = Announcement.objects.get(title="Your course")
         self.client.force_authenticate(user=self.student)
@@ -213,3 +231,31 @@ class AnnouncementApiTests(TestCase):
         self.assertFalse(target.is_pinned)
         self.assertTrue(Announcement.objects.filter(pk=target.pk).exists())
         self.assertTrue(AuditEvent.objects.filter(action="announcement_archived").exists())
+
+    def test_unapproved_lecturer_cannot_manage_own_announcement(self):
+        target = Announcement.objects.create(
+            title="Approval protected",
+            body="b",
+            scope="faculty",
+            faculty=self.faculty,
+            is_published=True,
+            created_by=self.lecturer,
+        )
+        self.client.force_authenticate(user=self.lecturer)
+
+        self.lecturer.lecturer_approval_status = User.LecturerApproval.PENDING
+        self.lecturer.save(update_fields=["lecturer_approval_status", "updated_at"])
+        pin = self.client.post(
+            reverse("announcements:pin", args=[target.pk]),
+            {"pinned": True},
+            format="json",
+        )
+        self.assertEqual(pin.status_code, 403)
+
+        self.lecturer.lecturer_approval_status = User.LecturerApproval.REJECTED
+        self.lecturer.save(update_fields=["lecturer_approval_status", "updated_at"])
+        archive = self.client.delete(reverse("announcements:detail", args=[target.pk]))
+        self.assertEqual(archive.status_code, 403)
+        target.refresh_from_db()
+        self.assertFalse(target.is_pinned)
+        self.assertFalse(target.is_archived)
