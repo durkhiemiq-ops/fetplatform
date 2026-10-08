@@ -93,7 +93,7 @@ blocked = requests.post(
     json={"identifier": email, "password": "StrongPass!2026"},
     timeout=45,
 )
-show("  POST /accounts/login/ BEFORE verify (expect 403 ACCOUNT_NOT_VERIFIED)", blocked)
+show("  POST /accounts/login/ (sign-in never requires verification; expect 200)", blocked)
 print()
 
 # --------------------------------------------------------------------------

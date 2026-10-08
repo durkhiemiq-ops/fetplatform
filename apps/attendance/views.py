@@ -11,6 +11,7 @@ from apps.attendance.models import (
     AttendanceRecord,
     AttendanceSession,
 )
+from apps.accounts.models import User
 from apps.attendance.services.attendance_service import (
     AlreadyMarkedError,
     AttendanceError,
@@ -18,26 +19,32 @@ from apps.attendance.services.attendance_service import (
     ClassSessionNotFoundError,
     CorrectionAuthorizationError,
     LecturerNotAuthorizedError,
+    ModeMismatchError,
     NotEligibleError,
+    SelfScanRejectedError,
     SessionAlreadyActiveError,
     SessionExpiredError,
     SessionNotActiveError,
-    TokenStudentMismatchError,
+    auto_select_checkpoints,
     close_attendance_session,
     correct_attendance,
     eligible_students_for_session,
     evaluate_repeated_failure,
+    expected_headcount,
     generate_checkpoint_token,
+    generate_projected_token,
     list_review_flags,
     refresh_session_status,
+    remove_checkpoint,
     scan_attendance,
     select_checkpoints,
     start_attendance_session,
     start_flexible_attendance_session,
+    station_summary,
+    station_token,
 )
 from apps.attendance.utils.qr_tokens import (
     InvalidTokenError,
-    TokenAlreadyUsedError,
     TokenExpiredError,
     get_qr_token_ttl_seconds,
 )
@@ -46,6 +53,7 @@ from core.academic_access import is_admin_user, is_authorized_academic_user
 from .serializers import (
     AttendanceScanSerializer,
     AttendanceSessionCreateSerializer,
+    AutoSelectStationsSerializer,
     CheckpointSelectSerializer,
     CorrectionCreateSerializer,
     FlexibleAttendanceStartSerializer,
@@ -87,24 +95,24 @@ class AttendanceScanView(APIView):
                 request_ip=request.META.get("REMOTE_ADDR"),
             )
             return _error(str(exc), "TOKEN_EXPIRED", status.HTTP_404_NOT_FOUND)
-        except TokenAlreadyUsedError as exc:
+        except SelfScanRejectedError as exc:
             evaluate_repeated_failure(
-                cache_backend=cache, actor_id=request.user.id, failure_code="TOKEN_ALREADY_USED",
+                cache_backend=cache, actor_id=request.user.id, failure_code="SELF_SCAN_REJECTED",
                 request_ip=request.META.get("REMOTE_ADDR"),
             )
-            return _error(str(exc), "TOKEN_ALREADY_USED", status.HTTP_409_CONFLICT)
+            return _error(str(exc), "SELF_SCAN_REJECTED", status.HTTP_403_FORBIDDEN)
+        except ModeMismatchError as exc:
+            evaluate_repeated_failure(
+                cache_backend=cache, actor_id=request.user.id, failure_code="MODE_MISMATCH",
+                request_ip=request.META.get("REMOTE_ADDR"),
+            )
+            return _error(str(exc), "MODE_MISMATCH", status.HTTP_409_CONFLICT)
         except InvalidTokenError as exc:
             evaluate_repeated_failure(
                 cache_backend=cache, actor_id=request.user.id, failure_code="INVALID_TOKEN",
                 request_ip=request.META.get("REMOTE_ADDR"),
             )
             return _error(str(exc), "INVALID_TOKEN", status.HTTP_404_NOT_FOUND)
-        except TokenStudentMismatchError as exc:
-            evaluate_repeated_failure(
-                cache_backend=cache, actor_id=request.user.id, failure_code="TOKEN_STUDENT_MISMATCH",
-                request_ip=request.META.get("REMOTE_ADDR"),
-            )
-            return _error(str(exc), "TOKEN_STUDENT_MISMATCH", status.HTTP_403_FORBIDDEN)
         except NotEligibleError as exc:
             return _error(str(exc), "NOT_ELIGIBLE", status.HTTP_403_FORBIDDEN)
         except SessionExpiredError as exc:
@@ -114,6 +122,7 @@ class AttendanceScanView(APIView):
         except AttendanceError as exc:
             return _error(str(exc), "ATTENDANCE_REJECTED", status.HTTP_400_BAD_REQUEST)
 
+        session = record.attendance_session
         return Response(
             {
                 "success": True,
@@ -121,6 +130,12 @@ class AttendanceScanView(APIView):
                     "attendance_record_id": str(record.id),
                     "attendance_session_id": str(record.attendance_session_id),
                     "recorded_at": record.recorded_at,
+                    # Honest reporting for the student's screen (MVP s11.C):
+                    # which mode just credited them, and whether the scan also
+                    # turned their device into a relay station.
+                    "mode": session.mode,
+                    "scope": getattr(record, "scope", None),
+                    "station_activated": bool(getattr(record, "station_activated", False)),
                 },
             },
             status=status.HTTP_201_CREATED,
@@ -194,17 +209,28 @@ class AttendanceSessionListCreateView(APIView):
         rows = []
         for session in queryset:
             refresh_session_status(session)
+            present = session.record_cnt
             # §67: class_session/lecturer uuid and lecturer_name are not
-            # consumed by the UI; course identity and counts carry the row.
+            # consumed by the UI; course identity, mode and counts carry the row.
+            headcount = expected_headcount(session=session)
             rows.append({
                 "id": str(session.id),
                 "course_code": session.class_session.course.code,
                 "course_name": session.class_session.course.name,
+                "class_name": session.class_session.course.name,
                 "status": session.status,
+                "mode": session.mode,
+                "is_active": session.status == AttendanceSession.Status.ACTIVE,
                 "started_at": session.started_at,
                 "expires_at": session.expires_at,
                 "checkpoints": session.checkpoint_cnt,
+                "stations": session.checkpoint_cnt,
                 "records": session.record_cnt,
+                "present": present,
+                "total_present": present,
+                "total_eligible": headcount,
+                "expected_headcount": headcount,
+                "headcount_remaining": max(headcount - present, 0),
             })
         return _success(rows)
 
@@ -219,6 +245,7 @@ class AttendanceSessionListCreateView(APIView):
                 actor=request.user,
                 class_session_id=validated["class_session"],
                 duration_seconds=validated.get("duration_seconds"),
+                mode=validated.get("mode"),
             )
         except ClassSessionNotFoundError as exc:
             return _error(str(exc), "CLASS_NOT_FOUND", 404)
@@ -234,6 +261,8 @@ class AttendanceSessionListCreateView(APIView):
                 # frontend consumes only identity/status/timing.
                 "id": str(session.id),
                 "status": session.status,
+                "mode": session.mode,
+                "is_active": session.status == AttendanceSession.Status.ACTIVE,
                 "started_at": session.started_at,
                 "expires_at": session.expires_at,
             },
@@ -256,6 +285,7 @@ class FlexibleAttendanceStartView(APIView):
                 actor=request.user,
                 offering_id=serializer.validated_data["offering_id"],
                 duration_seconds=serializer.validated_data.get("duration_seconds"),
+                mode=serializer.validated_data.get("mode"),
             )
         except ClassSessionNotFoundError:
             return _error("Course offering not found.", "NOT_FOUND", 404)
@@ -272,6 +302,8 @@ class FlexibleAttendanceStartView(APIView):
                 "course_code": session.class_session.course.code,
                 "class_name": session.class_session.course.name,
                 "status": session.status,
+                "mode": session.mode,
+                "is_active": session.status == AttendanceSession.Status.ACTIVE,
                 "started_at": session.started_at,
                 "expires_at": session.expires_at,
             },
@@ -292,7 +324,7 @@ class AttendanceSessionDetailView(APIView):
             return _error("Attendance session not found or not yours.", "NOT_FOUND", 404)
 
         checkpoints = list(
-            session.checkpoints.select_related("student").order_by("student__first_name", "student__last_name")
+            session.checkpoints.select_related("student").order_by("created_at", "student__username")
         )
         records = list(
             session.records.select_related("student")
@@ -302,13 +334,17 @@ class AttendanceSessionDetailView(APIView):
         record_by_student = {str(record.student_id): record for record in records}
 
         checkpoint_rows = []
-        for checkpoint in checkpoints:
+        for position, checkpoint in enumerate(checkpoints, start=1):
             record = record_by_student.get(str(checkpoint.student_id))
             checkpoint_rows.append({
                 "id": str(checkpoint.id),
                 "student": str(checkpoint.student_id),
                 "student_name": _user_name(checkpoint.student),
                 "marked": record is not None,
+                # Position is presentational only; it is not an identifier and
+                # carries no authority.
+                "checkpoint_number": position,
+                "source": checkpoint.source,
             })
 
         eligible = [
@@ -321,12 +357,17 @@ class AttendanceSessionDetailView(APIView):
             for student in eligible_students_for_session(session=session)
         ]
 
+        present = len(records)
+        headcount = len(eligible)
         return _success(
             {
                 "id": str(session.id),
                 "course_code": session.class_session.course.code,
                 "course_name": session.class_session.course.name,
+                "class_name": session.class_session.course.name,
                 "status": session.status,
+                "mode": session.mode,
+                "is_active": session.status == AttendanceSession.Status.ACTIVE,
                 "started_at": session.started_at,
                 "expires_at": session.expires_at,
                 "checkpoints": checkpoint_rows,
@@ -334,7 +375,13 @@ class AttendanceSessionDetailView(APIView):
                 "eligible_students": eligible,
                 "marked_count": len([c for c in checkpoint_rows if c["marked"]]),
                 "total_checkpoints": len(checkpoint_rows),
-                "record_count": len(records),
+                "stations": len(checkpoint_rows),
+                "record_count": present,
+                "present": present,
+                "total_present": present,
+                "total_eligible": headcount,
+                "expected_headcount": headcount,
+                "headcount_remaining": max(headcount - present, 0),
             }
         )
 
@@ -385,6 +432,9 @@ class AttendanceCheckpointSelectView(APIView):
             return _error(str(exc), "UNAUTHORIZED", 403)
         except SessionExpiredError as exc:
             return _error(str(exc), "SESSION_EXPIRED", 409)
+        except ModeMismatchError as exc:
+            # Seeding only exists in stations mode; a projected session says so.
+            return _error(str(exc), "MODE_MISMATCH", 409)
         except (CheckpointNotEligibleError, AttendanceError) as exc:
             return _error(str(exc), "CHECKPOINT_REJECTED", 400)
         return _success(
@@ -436,6 +486,136 @@ class AttendanceCheckpointTokenView(APIView):
         )
 
 
+class AttendanceSessionTokenView(APIView):
+    """Projected mode: issue the one shared code the whole room scans."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not is_authorized_academic_user(request.user):
+            return _error("Only academic users may issue QR codes.", "UNAUTHORIZED", 403)
+        session = _session_base(request.user, pk)
+        if session is None:
+            return _error("Attendance session not found or not yours.", "NOT_FOUND", 404)
+        try:
+            token = generate_projected_token(lecturer=request.user, session=session)
+        except LecturerNotAuthorizedError:
+            # §25: a non-owner must be indistinguishable from a missing session.
+            return _error("Attendance session not found or not yours.", "NOT_FOUND", 404)
+        except ModeMismatchError as exc:
+            return _error(str(exc), "MODE_MISMATCH", 409)
+        except SessionExpiredError as exc:
+            return _error(str(exc), "SESSION_EXPIRED", 409)
+        ttl = get_qr_token_ttl_seconds()
+        # §67: session uuid stays server-side; the client needs the code and
+        # how long it lives so it can rotate it before expiry.
+        return _success({"token": token, "ttl_seconds": ttl, "expires_in_seconds": ttl}, 201)
+
+
+class AttendanceAutoSelectView(APIView):
+    """Seed a handful of eligible students without manual picking."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        if not is_authorized_academic_user(request.user):
+            return _error("Only academic users may select stations.", "UNAUTHORIZED", 403)
+        session = _session_base(request.user, pk)
+        if session is None:
+            return _error("Attendance session not found or not yours.", "NOT_FOUND", 404)
+        serializer = AutoSelectStationsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            checkpoints = auto_select_checkpoints(
+                lecturer=request.user,
+                session=session,
+                count=serializer.validated_data.get("count", 3),
+            )
+        except ModeMismatchError as exc:
+            return _error(str(exc), "MODE_MISMATCH", 409)
+        except SessionExpiredError as exc:
+            return _error(str(exc), "SESSION_EXPIRED", 409)
+        except LecturerNotAuthorizedError as exc:
+            return _error(str(exc), "UNAUTHORIZED", 403)
+        except (CheckpointNotEligibleError, AttendanceError) as exc:
+            return _error(str(exc), "CHECKPOINT_REJECTED", 400)
+        return _success(
+            {
+                "checkpoints": [
+                    {
+                        "id": str(checkpoint.id),
+                        "student": str(checkpoint.student_id),
+                        "student_name": _user_name(checkpoint.student),
+                        "source": checkpoint.source,
+                    }
+                    for checkpoint in checkpoints
+                ]
+            },
+            201,
+        )
+
+
+class AttendanceCheckpointDeleteView(APIView):
+    """Withdraw a seed that has not relayed anything yet."""
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk, checkpoint_pk):
+        if not is_authorized_academic_user(request.user):
+            return _error("Only academic users may manage stations.", "UNAUTHORIZED", 403)
+        session = _session_base(request.user, pk)
+        if session is None:
+            return _error("Attendance session not found or not yours.", "NOT_FOUND", 404)
+        checkpoint = (
+            session.checkpoints.filter(id=checkpoint_pk).select_related("student").first()
+        )
+        if checkpoint is None:
+            return _error("Station not found.", "NOT_FOUND", 404)
+        try:
+            remove_checkpoint(lecturer=request.user, session=session, checkpoint=checkpoint)
+        except SessionExpiredError as exc:
+            return _error(str(exc), "SESSION_EXPIRED", 409)
+        except LecturerNotAuthorizedError as exc:
+            return _error(str(exc), "UNAUTHORIZED", 403)
+        except AttendanceError as exc:
+            # Includes "already relayed attendance": history is never erased.
+            return _error(str(exc), "CHECKPOINT_REJECTED", 400)
+        return _success({"id": str(checkpoint_pk), "removed": True})
+
+
+class AttendanceStationTokenView(APIView):
+    """A station's own device polls this for its next 10-second relay code."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        if getattr(request.user, "role", None) != User.Role.STUDENT:
+            return _error("Only student accounts act as stations.", "UNAUTHORIZED", 403)
+        try:
+            data = station_token(student=request.user, session_id=pk)
+        except NotEligibleError as exc:
+            # §25: no confirmation of whether the session or the station exists.
+            return _error(str(exc), "FORBIDDEN", 403)
+        except ModeMismatchError as exc:
+            return _error(str(exc), "MODE_MISMATCH", 409)
+        except SessionExpiredError as exc:
+            return _error(str(exc), "SESSION_EXPIRED", 409)
+        return _success(data)
+
+
+class MyStationView(APIView):
+    """The student's live station banner, or an honest null when there is none.
+
+    Always 200: "you are not a station right now" is a normal state, not an
+    error, and the client must not show a failure for it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return _success(station_summary(student=request.user))
+
+
 class AttendanceRecordListView(APIView):
     """Students see their own history; academics see their sessions' records."""
 
@@ -468,10 +648,13 @@ class AttendanceRecordListView(APIView):
             )
 
         rows = []
+        # The corrections relation is already prefetched above: read the cached
+        # rows, never exists()/count(), which would re-query per record.
         for record in queryset[:500]:
             course = record.attendance_session.class_session.course
             # §67: session/class/student uuids are not rendered by the UI;
             # course codes, names and the correction envelope carry the row.
+            corrections = list(record.corrections.all())
             rows.append(
                 {
                     "id": str(record.id),
@@ -480,8 +663,8 @@ class AttendanceRecordListView(APIView):
                     "student_name": _user_name(record.student),
                     "recorded_at": record.recorded_at,
                     "status": "PRESENT",
-                    "corrected": record.corrections.exists(),
-                    "correction_count": record.corrections.count(),
+                    "corrected": bool(corrections),
+                    "correction_count": len(corrections),
                 }
             )
         return _success(rows)

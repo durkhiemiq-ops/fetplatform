@@ -85,12 +85,12 @@ show("  POST /accounts/register/", reg,
      extra=f"csrftoken cookie in jar: {bool(s.cookies.get('csrftoken'))}")
 print()
 
-# ---- 2. login blocked -------------------------------------------------------
+# ---- 2. login works immediately -----------------------------------------------
 blocked = s.post(
     f"{API8000}/accounts/login/",
     json={"identifier": email, "password": "StrongPass!2026"},
 )
-show("  POST /accounts/login/ (expect 403 ACCOUNT_NOT_VERIFIED)", blocked)
+show("  POST /accounts/login/ (sign-in never requires verification; expect 200)", blocked)
 print()
 
 # ---- 3. read the code from the backend console ------------------------------
