@@ -212,25 +212,25 @@ const LecturerDashboard = ({ user }) => {
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         onClick={() => navigate(`/lessons/${c.offering_id}`)}
-                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-white flex items-center gap-1.5"
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-surface flex items-center gap-1.5"
                       >
                         <FileText size={13} /> Materials
                       </button>
                       <button
                         onClick={() => navigate(`/lessons/${c.offering_id}`)}
-                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-white flex items-center gap-1.5"
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-surface flex items-center gap-1.5"
                       >
                         <ClipboardCheck size={13} /> Assignments
                       </button>
                       <button
                         onClick={() => navigate(`/assessment`)}
-                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-white flex items-center gap-1.5"
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-surface flex items-center gap-1.5"
                       >
                         <Award size={13} /> Marks
                       </button>
                       <button
                         onClick={() => navigate(`/attendance`)}
-                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-white flex items-center gap-1.5"
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-border-default text-text-primary hover:bg-surface flex items-center gap-1.5"
                       >
                         <QrCode size={13} /> Attendance
                       </button>

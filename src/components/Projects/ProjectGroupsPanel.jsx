@@ -212,7 +212,7 @@ const ProjectGroupsPanel = ({ project, canManageGroups, canManageProject, onChan
                 {unassigned.filter(matches).map((s) => (
                   <div
                     key={s.id}
-                    className="flex items-center gap-2 bg-white border border-border-default rounded-lg px-2 py-1"
+                    className="flex items-center gap-2 bg-surface border border-border-default rounded-lg px-2 py-1"
                   >
                     <span className="text-xs">
                       <span className="font-medium text-text-primary">{s.full_name}</span>
@@ -221,7 +221,7 @@ const ProjectGroupsPanel = ({ project, canManageGroups, canManageProject, onChan
                     <select
                       value={moveTarget[s.id] || ''}
                       onChange={(e) => moveStudent(s.id, e.target.value)}
-                      className="text-xs border border-border-default rounded px-1 py-0.5 bg-white"
+                      className="text-xs border border-border-default rounded px-1 py-0.5 bg-surface"
                     >
                       <option value="">Add to...</option>
                       {groups.map((g) => (
@@ -254,7 +254,7 @@ const ProjectGroupsPanel = ({ project, canManageGroups, canManageProject, onChan
             const isOpen = expanded[g.id];
             const members = (g.members || []).filter(matches);
             return (
-              <div key={g.id} className="rounded-xl border border-border-default bg-white overflow-hidden">
+              <div key={g.id} className="rounded-xl border border-border-default bg-surface overflow-hidden">
                 <div className="flex items-center justify-between gap-2 p-3">
                   <button
                     onClick={() => setExpanded((p) => ({ ...p, [g.id]: !p[g.id] }))}

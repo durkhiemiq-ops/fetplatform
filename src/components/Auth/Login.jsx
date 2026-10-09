@@ -52,7 +52,7 @@ const Login = ({ onLogin, onSwitchToSignUp }) => {
   return (
     <div className="min-h-screen flex">
       {/* Left: Login Form */}
-      <div className="flex-1 flex items-center justify-center p-6 bg-white">
+      <div className="flex-1 flex items-center justify-center p-6 bg-surface">
         <div className="w-full max-w-[400px]">
           {/* Logo */}
           <div className="flex items-center gap-3 mb-10">

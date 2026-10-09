@@ -122,6 +122,27 @@
 .app-container { min-height: 100vh; }
 
 /* ============================================================
+   AUTH SCREENS
+   ============================================================ */
+/* Marketing panel on the sign-in / sign-up screens. This panel is
+   intentionally deep navy in BOTH themes (it carries fixed white type), so
+   it owns fixed colours instead of theme variables. The class is referenced
+   by Login.jsx and SignUp.jsx; it previously had no definition, which left
+   white type floating on the page canvas in light mode. */
+.fet-tech-grid {
+  background-color: #131133;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, .05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .05) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+/* The QR sheet must stay white in both themes (scanners need the contrast),
+   so the helper lines inside it take fixed light-ink colours instead of the
+   theme-driven text tokens, which would wash out on white in dark mode. */
+.qr-sheet p { color: rgb(86 93 104); }
+
+/* ============================================================
    SIDEBAR
    ============================================================ */
 .sidebar {

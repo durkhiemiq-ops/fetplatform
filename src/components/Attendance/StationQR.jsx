@@ -75,7 +75,7 @@ const StationQR = ({ sessionId, station }) => {
 
       {error && <p className="text-xs text-red-200 mb-2">{error}</p>}
 
-      <div className="bg-white rounded-xl p-6 text-center">
+      <div className="bg-white qr-sheet rounded-xl p-6 text-center">
         {loading ? (
           <div className="flex justify-center py-8">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />

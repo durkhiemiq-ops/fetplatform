@@ -520,7 +520,7 @@ const CourseDetail = ({ user }) => {
                 {group.items.map((material) => (
                   <div
                     key={material.id}
-                    className="flex items-center justify-between gap-3 p-4 bg-white rounded-xl border border-border-default shadow-card hover:shadow-card-hover transition-shadow"
+                    className="flex items-center justify-between gap-3 p-4 bg-surface rounded-xl border border-border-default shadow-card hover:shadow-card-hover transition-shadow"
                   >
                     <div className="flex items-start gap-3 min-w-0">
                       <div className="p-2.5 bg-primary/5 rounded-lg shrink-0">{fileIcon(material.file_info?.original_name)}</div>

@@ -295,7 +295,7 @@ const MembersTab = ({ projectId, groups, members, canManage, onChanged }) => {
             )}
             <ul className="space-y-2">
               {(group.members || []).map((m) => (
-                <li key={m.id} className="flex items-center justify-between bg-white rounded-lg px-3 py-2">
+                <li key={m.id} className="flex items-center justify-between bg-surface rounded-lg px-3 py-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-bold text-primary flex-shrink-0">
                       {initials(m.student_name)}
@@ -339,7 +339,7 @@ const MembersTab = ({ projectId, groups, members, canManage, onChanged }) => {
 
       {showAddMember && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto">
+          <div className="bg-surface rounded-xl shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto">
             <div className="flex items-center justify-between p-5 border-b border-border-default">
               <h3 className="text-[15px] font-bold text-text-primary">Add Member</h3>
               <button onClick={() => setShowAddMember(false)} className="p-1 hover:bg-page-bg rounded-lg">
@@ -397,7 +397,7 @@ const GroupForm = ({ projectId, onClose, onDone }) => {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-xl max-w-md w-full">
+      <div className="bg-surface rounded-xl shadow-xl max-w-md w-full">
         <div className="flex items-center justify-between p-5 border-b border-border-default">
           <h3 className="text-[15px] font-bold text-text-primary">Add Group</h3>
           <button onClick={onClose} className="p-1 hover:bg-page-bg rounded-lg"><X size={20} className="text-text-secondary" /></button>
@@ -523,7 +523,7 @@ const TaskForm = ({ projectId, groups, members, fixedGroupId = '', onClose, onDo
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-xl max-w-lg w-full">
+      <div className="bg-surface rounded-xl shadow-xl max-w-lg w-full">
         <div className="flex items-center justify-between p-5 border-b border-border-default">
           <h3 className="text-[15px] font-bold text-text-primary">New Task</h3>
           <button onClick={onClose} className="p-1 hover:bg-page-bg rounded-lg"><X size={20} className="text-text-secondary" /></button>
@@ -656,7 +656,7 @@ const MilestoneForm = ({ milestone, initialDue, onClose, onSubmit }) => {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-xl max-w-md w-full">
+      <div className="bg-surface rounded-xl shadow-xl max-w-md w-full">
         <div className="flex items-center justify-between p-5 border-b border-border-default">
           <h3 className="text-[15px] font-bold text-text-primary">{milestone ? 'Edit Milestone' : 'Add Milestone'}</h3>
           <button onClick={onClose} className="p-1 hover:bg-page-bg rounded-lg"><X size={20} className="text-text-secondary" /></button>
@@ -886,7 +886,7 @@ const AssessmentsTab = ({ projectId, assessments, members, canManage, onChanged 
 };
 
 const ScoreForm = ({ component, members, value, onChange, onCancel, onSave }) => (
-  <div className="mt-4 p-3 bg-white rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+  <div className="mt-4 p-3 bg-surface rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
     <div>
       <label className="fet-label">Student</label>
       <select value={value.student || ''} onChange={(e) => onChange({ student: e.target.value })} className="fet-select">
@@ -913,7 +913,7 @@ const ReportModal = ({ report, onClose }) => {
   const s = report.summary || {};
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div className="bg-surface rounded-xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-5 border-b border-border-default">
           <h3 className="text-[15px] font-bold text-text-primary">
             {report.project?.title} — {report.group?.name}

@@ -123,7 +123,7 @@ const SignUp = ({ onSwitchToLogin }) => {
   return (
     <div className="min-h-screen flex">
       {/* Left: Form */}
-      <div className="flex-1 flex items-center justify-center p-6 bg-white">
+      <div className="flex-1 flex items-center justify-center p-6 bg-surface">
         <div className="w-full max-w-[420px]">
           <button onClick={onSwitchToLogin} className="flex items-center gap-2 text-text-secondary hover:text-text-primary mb-8 transition-colors text-[13px] font-medium">
             <ArrowLeft size={16} /> Back to Login
