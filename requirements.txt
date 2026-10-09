@@ -6,3 +6,5 @@ psycopg2-binary
 redis>=5.0,<7.0
 django-redis
 django-cors-headers>=4.3,<5.0
+gunicorn>=23.0,<24.0
+whitenoise>=6.0,<7.0

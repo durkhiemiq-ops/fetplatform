@@ -37,6 +37,11 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # WhiteNoise serves collected static files directly from the app process
+    # (admin CSS/JS included), so no separate static host is needed on Render.
+    # It must sit right after SecurityMiddleware and before all other
+    # middleware, per the WhiteNoise docs.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -112,6 +117,17 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+# Collect target for `manage.py collectstatic` (run at deploy build time).
+# CompressedManifestStaticFilesStorage fingerprints filenames for far-future
+# caching and fails the build on a missing referenced file instead of
+# shipping a silently broken admin/CSS bundle.
+STATIC_ROOT = BASE_DIR / "staticfiles"
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"
+    },
+}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 AUTH_USER_MODEL = "accounts.User"
